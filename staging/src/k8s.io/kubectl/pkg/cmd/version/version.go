@@ -95,11 +95,7 @@ func NewCmdVersion(f cmdutil.Factory, ioStreams genericiooptions.IOStreams) *cob
 func (o *Options) Complete(f cmdutil.Factory, cmd *cobra.Command, args []string) error {
 	var err error
 
-	if cmd.Parent() != nil {
-		if flag := cmd.Parent().PersistentFlags().Lookup("warnings-as-errors"); flag != nil {
-			o.WarningsAsErrors = flag.Value.String() == "true"
-		}
-	}
+	o.WarningsAsErrors = cmd.Flags().Lookup("warnings-as-errors").Value.String() == "true"
 
 	if o.ClientOnly {
 		return nil
@@ -178,10 +174,7 @@ func (o *Options) Run() error {
 			if o.WarningsAsErrors {
 				return errors.New(warningMessage)
 			}
-			_, err = fmt.Fprintf(o.ErrOut, "Warning: %s\n", warningMessage)
-			if err != nil {
-				return err
-			}
+			fmt.Fprintf(o.ErrOut, "Warning: %s\n", warningMessage)
 		}
 	}
 	return serverErr
