@@ -1,0 +1,34 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.5",
+  "base_commit_sha": "8f9badbce9be60eeb066a0a2ef0ba92f51552f8e",
+  "prompts": {
+    "3ae2e5224f60dc2f": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "56d1d13b-166d-44c0-9469-c95f3ca87bb5",
+        "model": "copilot/claude-opus-4.6"
+      },
+      "human_author": "Adrian Moisey <adrian@changeover.za.net>",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    },
+    "514deead1b06a9cd": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "b0e39215-5ebe-4344-9c53-ed3bf2b2b57f",
+        "model": "copilot/auto"
+      },
+      "human_author": "Adrian Moisey <adrian@changeover.za.net>",
+      "messages": [],
+      "total_additions": 182,
+      "total_deletions": 130,
+      "accepted_lines": 82,
+      "overriden_lines": 1
+    }
+  }
+}
