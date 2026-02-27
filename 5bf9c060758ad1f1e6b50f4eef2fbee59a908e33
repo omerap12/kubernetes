@@ -1,0 +1,71 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.5",
+  "base_commit_sha": "5bf9c060758ad1f1e6b50f4eef2fbee59a908e33",
+  "prompts": {
+    "3ae2e5224f60dc2f": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "56d1d13b-166d-44c0-9469-c95f3ca87bb5",
+        "model": "copilot/claude-opus-4.6"
+      },
+      "human_author": "Adrian Moisey <adrian@changeover.za.net>",
+      "messages": [
+        {
+          "type": "user",
+          "text": "can you also enable all APIs for me please?",
+          "timestamp": "2026-02-19T11:08:32.435+00:00"
+        },
+        {
+          "type": "tool_use",
+          "name": "copilot_readFile",
+          "input": "Reading [](file:///Users/adrian/src/kubernetes/kubernetes/kind-all-features.yaml)"
+        },
+        {
+          "type": "tool_use",
+          "name": "copilot_replaceString",
+          "input": "Replacing 2 lines with 5 lines in [](file:///Users/adrian/src/kubernetes/kubernetes/kind-all-features.yaml)"
+        },
+        {
+          "type": "tool_use",
+          "name": "textEditGroup",
+          "input": {
+            "done": true,
+            "edits": [
+              [
+                {
+                  "range": {
+                    "endColumn": 1,
+                    "endLineNumber": 30,
+                    "startColumn": 1,
+                    "startLineNumber": 30
+                  },
+                  "text": "runtimeConfig:\n  \"api/all\": \"true\"\n\n"
+                }
+              ],
+              []
+            ],
+            "kind": "textEditGroup",
+            "uri": {
+              "$mid": 1,
+              "external": "file:///Users/adrian/src/kubernetes/kubernetes/kind-all-features.yaml",
+              "fsPath": "/Users/adrian/src/kubernetes/kubernetes/kind-all-features.yaml",
+              "path": "/Users/adrian/src/kubernetes/kubernetes/kind-all-features.yaml",
+              "scheme": "file"
+            }
+          }
+        },
+        {
+          "type": "assistant",
+          "text": "The user wants to enable all APIs in their kind cluster config. In kind, you can enable runtime APIs (like alpha/beta API groups) using the `runtimeConfig` field under the `kubeadmConfigPatches` section, or more commonly via `apiServer.extraArgs` in the kind config.\n\nTo enable all APIs, you set `--runtime-config=api/all=true` on the kube-apiserver. In kind, this is done via `kubeadmConfigPatches`.\n\nLet me update the kind-all-features.yaml to include this. ``` @/Users/adrian/src/kubernetes/kubernetes/kind-all-features.yaml ``` Added `runtimeConfig: \"api/all\": \"true\"` which tells the API server ( ) to enable all API groups, including alpha and beta ones.",
+          "timestamp": "2026-02-19T11:08:50.116+00:00"
+        }
+      ],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    }
+  }
+}
