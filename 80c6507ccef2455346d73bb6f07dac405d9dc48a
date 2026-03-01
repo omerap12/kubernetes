@@ -1,0 +1,25 @@
+pkg/api/service/warnings_test.go
+  f6a76cdff2a5dfeb 120
+pkg/api/service/warnings.go
+  f6a76cdff2a5dfeb 61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.7",
+  "base_commit_sha": "80c6507ccef2455346d73bb6f07dac405d9dc48a",
+  "prompts": {
+    "f6a76cdff2a5dfeb": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "97586ce4-883e-47eb-bd07-b2d63ceea260",
+        "model": "copilot/claude-opus-4.6"
+      },
+      "human_author": "Adrian Moisey <adrian@changeover.za.net>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
