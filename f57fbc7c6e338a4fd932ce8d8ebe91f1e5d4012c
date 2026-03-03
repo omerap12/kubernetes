@@ -1,0 +1,23 @@
+pkg/registry/autoscaling/horizontalpodautoscaler/strategy.go
+  f910004c7fe1008a 238-239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "f57fbc7c6e338a4fd932ce8d8ebe91f1e5d4012c",
+  "prompts": {
+    "f910004c7fe1008a": {
+      "agent_id": {
+        "tool": "github-copilot",
+        "id": "03bd9850-0142-4f94-9469-6ba481e36ab6",
+        "model": "copilot/auto"
+      },
+      "human_author": "Adrian Moisey <adrian@changeover.za.net>",
+      "messages": [],
+      "total_additions": 6,
+      "total_deletions": 5,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    }
+  }
+}
