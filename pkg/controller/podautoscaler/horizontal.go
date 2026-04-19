@@ -397,16 +397,14 @@ func (a *HorizontalController) hpasControllingPodsUnderSelector(pods []*v1.Pod) 
 func (a *HorizontalController) validateAndParseSelector(hpa *autoscalingv2.HorizontalPodAutoscaler, selector string) (labels.Selector, error) {
 	if selector == "" {
 		errMsg := "selector is required"
-		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "SelectorRequired", errMsg)
-		setCondition(hpa, autoscalingv2.ScalingActive, v1.ConditionFalse, "InvalidSelector", "the HPA target's scale is missing a selector")
+		a.setConditionWithEvent(context.TODO(), hpa, v1.EventTypeWarning, autoscalingv2.ScalingActive, "SelectorRequired", errMsg, v1.ConditionFalse, "InvalidSelector", "the HPA target's scale is missing a selector", nil)
 		return nil, errors.New(errMsg)
 	}
 
 	parsedSelector, err := labels.Parse(selector)
 	if err != nil {
 		errMsg := fmt.Sprintf("couldn't convert selector into a corresponding internal selector object: %v", err)
-		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "InvalidSelector", errMsg)
-		setCondition(hpa, autoscalingv2.ScalingActive, v1.ConditionFalse, "InvalidSelector", "%s", errMsg)
+		a.setConditionWithEvent(context.TODO(), hpa, v1.EventTypeWarning, autoscalingv2.ScalingActive, "InvalidSelector", errMsg, v1.ConditionFalse, "InvalidSelector", "%s", nil, errMsg)
 		return nil, errors.New(errMsg)
 	}
 
@@ -426,8 +424,7 @@ func (a *HorizontalController) validateAndParseSelector(hpa *autoscalingv2.Horiz
 	selectingHpas := a.hpasControllingPodsUnderSelector(pods)
 	if len(selectingHpas) > 1 {
 		errMsg := fmt.Sprintf("pods by selector %v are controlled by multiple HPAs: %v", selector, selectingHpas)
-		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "AmbiguousSelector", errMsg)
-		setCondition(hpa, autoscalingv2.ScalingActive, v1.ConditionFalse, "AmbiguousSelector", "%s", errMsg)
+		a.setConditionWithEvent(context.TODO(), hpa, v1.EventTypeWarning, autoscalingv2.ScalingActive, "AmbiguousSelector", errMsg, v1.ConditionFalse, "AmbiguousSelector", "%s", nil, errMsg)
 		return nil, errors.New(errMsg)
 	}
 
@@ -702,50 +699,42 @@ func (a *HorizontalController) computeStatusForContainerResourceMetric(ctx conte
 // computeStatusForExternalMetric computes the desired number of replicas for the specified metric of type ExternalMetricSourceType.
 func (a *HorizontalController) computeStatusForExternalMetric(specReplicas, statusReplicas int32, metricSpec autoscalingv2.MetricSpec, hpa *autoscalingv2.HorizontalPodAutoscaler, selector labels.Selector, status *autoscalingv2.MetricStatus) (replicaCountProposal int32, timestampProposal time.Time, metricNameProposal string, condition autoscalingv2.HorizontalPodAutoscalerCondition, err error) {
 	tolerances := a.tolerancesForHpa(hpa)
+	var usageProposal int64
+	var currentValueStatus autoscalingv2.MetricValueStatus
+
 	if metricSpec.External.Target.AverageValue != nil {
-		replicaCountProposal, usageProposal, timestampProposal, err := a.replicaCalc.GetExternalPerPodMetricReplicas(statusReplicas, metricSpec.External.Target.AverageValue.MilliValue(), metricSpec.External.Metric.Name, tolerances, hpa.Namespace, metricSpec.External.Metric.Selector)
-		if err != nil {
-			condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetExternalMetric", err)
-			return 0, time.Time{}, "", condition, fmt.Errorf("failed to get %s external metric: %v", metricSpec.External.Metric.Name, err)
+		replicaCountProposal, usageProposal, timestampProposal, err = a.replicaCalc.GetExternalPerPodMetricReplicas(statusReplicas, metricSpec.External.Target.AverageValue.MilliValue(), metricSpec.External.Metric.Name, tolerances, hpa.Namespace, metricSpec.External.Metric.Selector)
+		currentValueStatus = autoscalingv2.MetricValueStatus{
+			AverageValue: resource.NewMilliQuantity(usageProposal, resource.DecimalSI),
 		}
-		*status = autoscalingv2.MetricStatus{
-			Type: autoscalingv2.ExternalMetricSourceType,
-			External: &autoscalingv2.ExternalMetricStatus{
-				Metric: autoscalingv2.MetricIdentifier{
-					Name:     metricSpec.External.Metric.Name,
-					Selector: metricSpec.External.Metric.Selector,
-				},
-				Current: autoscalingv2.MetricValueStatus{
-					AverageValue: resource.NewMilliQuantity(usageProposal, resource.DecimalSI),
-				},
-			},
+	} else if metricSpec.External.Target.Value != nil {
+		replicaCountProposal, usageProposal, timestampProposal, err = a.replicaCalc.GetExternalMetricReplicas(specReplicas, metricSpec.External.Target.Value.MilliValue(), metricSpec.External.Metric.Name, tolerances, hpa.Namespace, metricSpec.External.Metric.Selector, selector)
+		currentValueStatus = autoscalingv2.MetricValueStatus{
+			Value: resource.NewMilliQuantity(usageProposal, resource.DecimalSI),
 		}
-		return replicaCountProposal, timestampProposal, fmt.Sprintf("external metric %s(%+v)", metricSpec.External.Metric.Name, metricSpec.External.Metric.Selector), autoscalingv2.HorizontalPodAutoscalerCondition{}, nil
+	} else {
+		errMsg := "invalid external metric source: neither a value target nor an average value target was set"
+		err = errors.New(errMsg)
+		condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetExternalMetric", err)
+		return 0, time.Time{}, "", condition, errors.New(errMsg)
 	}
-	if metricSpec.External.Target.Value != nil {
-		replicaCountProposal, usageProposal, timestampProposal, err := a.replicaCalc.GetExternalMetricReplicas(specReplicas, metricSpec.External.Target.Value.MilliValue(), metricSpec.External.Metric.Name, tolerances, hpa.Namespace, metricSpec.External.Metric.Selector, selector)
-		if err != nil {
-			condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetExternalMetric", err)
-			return 0, time.Time{}, "", condition, fmt.Errorf("failed to get external metric %s: %v", metricSpec.External.Metric.Name, err)
-		}
-		*status = autoscalingv2.MetricStatus{
-			Type: autoscalingv2.ExternalMetricSourceType,
-			External: &autoscalingv2.ExternalMetricStatus{
-				Metric: autoscalingv2.MetricIdentifier{
-					Name:     metricSpec.External.Metric.Name,
-					Selector: metricSpec.External.Metric.Selector,
-				},
-				Current: autoscalingv2.MetricValueStatus{
-					Value: resource.NewMilliQuantity(usageProposal, resource.DecimalSI),
-				},
-			},
-		}
-		return replicaCountProposal, timestampProposal, fmt.Sprintf("external metric %s(%+v)", metricSpec.External.Metric.Name, metricSpec.External.Metric.Selector), autoscalingv2.HorizontalPodAutoscalerCondition{}, nil
+
+	if err != nil {
+		condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetExternalMetric", err)
+		return 0, time.Time{}, "", condition, fmt.Errorf("failed to get %s external metric: %v", metricSpec.External.Metric.Name, err)
 	}
-	errMsg := "invalid external metric source: neither a value target nor an average value target was set"
-	err = errors.New(errMsg)
-	condition = a.getUnableComputeReplicaCountCondition(hpa, "FailedGetExternalMetric", err)
-	return 0, time.Time{}, "", condition, errors.New(errMsg)
+
+	*status = autoscalingv2.MetricStatus{
+		Type: autoscalingv2.ExternalMetricSourceType,
+		External: &autoscalingv2.ExternalMetricStatus{
+			Metric: autoscalingv2.MetricIdentifier{
+				Name:     metricSpec.External.Metric.Name,
+				Selector: metricSpec.External.Metric.Selector,
+			},
+			Current: currentValueStatus,
+		},
+	}
+	return replicaCountProposal, timestampProposal, fmt.Sprintf("external metric %s(%+v)", metricSpec.External.Metric.Name, metricSpec.External.Metric.Selector), autoscalingv2.HorizontalPodAutoscalerCondition{}, nil
 }
 
 func (a *HorizontalController) recordInitialRecommendation(currentReplicas int32, key string) {
@@ -795,11 +784,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 
 	targetGV, err := schema.ParseGroupVersion(hpa.Spec.ScaleTargetRef.APIVersion)
 	if err != nil {
-		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
-		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionFalse, "FailedGetScale", "the HPA controller was unable to get the target's current scale: %v", err)
-		if err := a.updateStatusIfNeeded(ctx, hpaStatusOriginal, hpa); err != nil {
-			utilruntime.HandleError(err)
-		}
+		a.setConditionWithEvent(ctx, hpa, v1.EventTypeWarning, autoscalingv2.AbleToScale, "FailedGetScale", err.Error(), v1.ConditionFalse, "FailedGetScale", "the HPA controller was unable to get the target's current scale: %v", hpaStatusOriginal, err)
 		return fmt.Errorf("invalid API version in scale target reference: %v%w", err, errSpec)
 	}
 
@@ -810,21 +795,13 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 
 	mappings, err := a.mapper.RESTMappings(targetGK)
 	if err != nil {
-		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
-		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionFalse, "FailedGetScale", "the HPA controller was unable to get the target's current scale: %v", err)
-		if err := a.updateStatusIfNeeded(ctx, hpaStatusOriginal, hpa); err != nil {
-			utilruntime.HandleError(err)
-		}
+		a.setConditionWithEvent(ctx, hpa, v1.EventTypeWarning, autoscalingv2.AbleToScale, "FailedGetScale", err.Error(), v1.ConditionFalse, "FailedGetScale", "the HPA controller was unable to get the target's current scale: %v", hpaStatusOriginal, err)
 		return fmt.Errorf("unable to determine resource for scale target reference: %v", err)
 	}
 
 	scale, targetGR, err := a.scaleForResourceMappings(ctx, hpa.Namespace, hpa.Spec.ScaleTargetRef.Name, mappings)
 	if err != nil {
-		a.eventRecorder.Event(hpa, v1.EventTypeWarning, "FailedGetScale", err.Error())
-		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionFalse, "FailedGetScale", "the HPA controller was unable to get the target's current scale: %v", err)
-		if err := a.updateStatusIfNeeded(ctx, hpaStatusOriginal, hpa); err != nil {
-			utilruntime.HandleError(err)
-		}
+		a.setConditionWithEvent(ctx, hpa, v1.EventTypeWarning, autoscalingv2.AbleToScale, "FailedGetScale", err.Error(), v1.ConditionFalse, "FailedGetScale", "the HPA controller was unable to get the target's current scale: %v", hpaStatusOriginal, err)
 		return fmt.Errorf("failed to query scale subresource for %s: %v", reference, err)
 	}
 	setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionTrue, "SucceededGetScale", "the HPA controller was able to get the target's current scale")
@@ -965,8 +942,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 
 		if err != nil {
 			// This block executes if retries were exhausted or a non-conflict error occurred.
-			a.eventRecorder.Eventf(hpa, v1.EventTypeWarning, "FailedRescale", "New size: %d; reason: %s; error: %v", desiredReplicas, rescaleReason, err.Error())
-			setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionFalse, "FailedUpdateScale", "the HPA controller was unable to update the target scale: %v", err)
+			a.setConditionWithEvent(ctx, hpa, v1.EventTypeWarning, autoscalingv2.AbleToScale, "FailedRescale", fmt.Sprintf("New size: %d; reason: %s; error: %v", desiredReplicas, rescaleReason, err.Error()), v1.ConditionFalse, "FailedUpdateScale", "the HPA controller was unable to update the target scale: %v", nil, err)
 			a.setCurrentReplicasAndMetricsInStatus(hpa, currentReplicas, metricStatuses)
 			if err := a.updateStatusIfNeeded(ctx, hpaStatusOriginal, hpa); err != nil {
 				utilruntime.HandleError(err)
@@ -975,8 +951,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 		}
 
 		// This block executes only on a successful rescale.
-		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionTrue, "SucceededRescale", "the HPA controller was able to update the target scale to %d", desiredReplicas)
-		a.eventRecorder.Eventf(hpa, v1.EventTypeNormal, "SuccessfulRescale", "New size: %d; reason: %s", desiredReplicas, rescaleReason)
+		a.setConditionWithEvent(ctx, hpa, v1.EventTypeNormal, autoscalingv2.AbleToScale, "SuccessfulRescale", fmt.Sprintf("New size: %d; reason: %s", desiredReplicas, rescaleReason), v1.ConditionTrue, "SucceededRescale", "the HPA controller was able to update the target scale to %d", nil, desiredReplicas)
 		a.storeScaleEvent(hpa.Spec.Behavior, key, currentReplicas, desiredReplicas)
 		logger.Info("Successfully rescaled",
 			"HPA", klog.KObj(hpa),
@@ -1150,53 +1125,39 @@ func (a *HorizontalController) getUnableComputeReplicaCountCondition(hpa runtime
 	}
 }
 
+// replaceOrAppendScaleEvent marks outdated events and stores a new scale event,
+// reusing an outdated slot if available.
+func replaceOrAppendScaleEvent(events []timestampedScaleEvent, longestPolicyPeriod int32, replicaChange int32) []timestampedScaleEvent {
+	markScaleEventsOutdated(events, longestPolicyPeriod)
+	newEvent := timestampedScaleEvent{replicaChange, time.Now(), false}
+	// Replace the last outdated event to match the original replacement order.
+	lastOutdated := -1
+	for i, event := range events {
+		if event.outdated {
+			lastOutdated = i
+		}
+	}
+	if lastOutdated >= 0 {
+		events[lastOutdated] = newEvent
+		return events
+	}
+	return append(events, newEvent)
+}
+
 // storeScaleEvent stores (adds or replaces outdated) scale event.
 // outdated events to be replaced were marked as outdated in the `markScaleEventsOutdated` function
 func (a *HorizontalController) storeScaleEvent(behavior *autoscalingv2.HorizontalPodAutoscalerBehavior, key string, prevReplicas, newReplicas int32) {
 	if behavior == nil {
 		return // we should not store any event as they will not be used
 	}
-	var oldSampleIndex int
-	var longestPolicyPeriod int32
-	foundOldSample := false
 	if newReplicas > prevReplicas {
-		longestPolicyPeriod = getLongestPolicyPeriod(behavior.ScaleUp)
-
 		a.scaleUpEventsLock.Lock()
 		defer a.scaleUpEventsLock.Unlock()
-		markScaleEventsOutdated(a.scaleUpEvents[key], longestPolicyPeriod)
-		replicaChange := newReplicas - prevReplicas
-		for i, event := range a.scaleUpEvents[key] {
-			if event.outdated {
-				foundOldSample = true
-				oldSampleIndex = i
-			}
-		}
-		newEvent := timestampedScaleEvent{replicaChange, time.Now(), false}
-		if foundOldSample {
-			a.scaleUpEvents[key][oldSampleIndex] = newEvent
-		} else {
-			a.scaleUpEvents[key] = append(a.scaleUpEvents[key], newEvent)
-		}
+		a.scaleUpEvents[key] = replaceOrAppendScaleEvent(a.scaleUpEvents[key], getLongestPolicyPeriod(behavior.ScaleUp), newReplicas-prevReplicas)
 	} else {
-		longestPolicyPeriod = getLongestPolicyPeriod(behavior.ScaleDown)
-
 		a.scaleDownEventsLock.Lock()
 		defer a.scaleDownEventsLock.Unlock()
-		markScaleEventsOutdated(a.scaleDownEvents[key], longestPolicyPeriod)
-		replicaChange := prevReplicas - newReplicas
-		for i, event := range a.scaleDownEvents[key] {
-			if event.outdated {
-				foundOldSample = true
-				oldSampleIndex = i
-			}
-		}
-		newEvent := timestampedScaleEvent{replicaChange, time.Now(), false}
-		if foundOldSample {
-			a.scaleDownEvents[key][oldSampleIndex] = newEvent
-		} else {
-			a.scaleDownEvents[key] = append(a.scaleDownEvents[key], newEvent)
-		}
+		a.scaleDownEvents[key] = replaceOrAppendScaleEvent(a.scaleDownEvents[key], getLongestPolicyPeriod(behavior.ScaleDown), prevReplicas-newReplicas)
 	}
 }
 
@@ -1271,7 +1232,7 @@ func (a *HorizontalController) convertDesiredReplicasWithBehaviorRate(args Norma
 		defer a.scaleUpEventsLock.RUnlock()
 		a.scaleDownEventsLock.RLock()
 		defer a.scaleDownEventsLock.RUnlock()
-		scaleUpLimit := calculateScaleUpLimitWithScalingRules(args.CurrentReplicas, a.scaleUpEvents[args.Key], a.scaleDownEvents[args.Key], args.ScaleUpBehavior)
+		scaleUpLimit := calculateScaleLimitWithScalingRules(args.CurrentReplicas, a.scaleUpEvents[args.Key], a.scaleDownEvents[args.Key], args.ScaleUpBehavior, true)
 
 		if scaleUpLimit < args.CurrentReplicas {
 			// We shouldn't scale up further until the scaleUpEvents will be cleaned up
@@ -1294,7 +1255,7 @@ func (a *HorizontalController) convertDesiredReplicasWithBehaviorRate(args Norma
 		defer a.scaleUpEventsLock.RUnlock()
 		a.scaleDownEventsLock.RLock()
 		defer a.scaleDownEventsLock.RUnlock()
-		scaleDownLimit := calculateScaleDownLimitWithBehaviors(args.CurrentReplicas, a.scaleUpEvents[args.Key], a.scaleDownEvents[args.Key], args.ScaleDownBehavior)
+		scaleDownLimit := calculateScaleLimitWithScalingRules(args.CurrentReplicas, a.scaleUpEvents[args.Key], a.scaleDownEvents[args.Key], args.ScaleDownBehavior, false)
 
 		if scaleDownLimit > args.CurrentReplicas {
 			// We shouldn't scale down further until the scaleDownEvents will be cleaned up
@@ -1379,57 +1340,54 @@ func getLongestPolicyPeriod(scalingRules *autoscalingv2.HPAScalingRules) int32 {
 	return longestPolicyPeriod
 }
 
-// calculateScaleUpLimitWithScalingRules returns the maximum number of pods that could be added for the given HPAScalingRules
-func calculateScaleUpLimitWithScalingRules(currentReplicas int32, scaleUpEvents, scaleDownEvents []timestampedScaleEvent, scalingRules *autoscalingv2.HPAScalingRules) int32 {
-	var result int32
-	var proposed int32
-	var selectPolicyFn func(int32, int32) int32
+// calculateScaleLimitWithScalingRules returns the scaling limit based on the given HPAScalingRules and direction.
+// For scale up (isScaleUp=true), returns the maximum number of pods that could be added.
+// For scale down (isScaleUp=false), returns the minimum number of pods that could remain.
+func calculateScaleLimitWithScalingRules(currentReplicas int32, scaleUpEvents, scaleDownEvents []timestampedScaleEvent, scalingRules *autoscalingv2.HPAScalingRules, isScaleUp bool) int32 {
 	if *scalingRules.SelectPolicy == autoscalingv2.DisabledPolicySelect {
 		return currentReplicas // Scaling is disabled
-	} else if *scalingRules.SelectPolicy == autoscalingv2.MinChangePolicySelect {
-		result = math.MaxInt32
-		selectPolicyFn = minInt32 // For scaling up, the lowest change ('min' policy) produces a minimum value
-	} else {
-		result = math.MinInt32
-		selectPolicyFn = maxInt32 // Use the default policy otherwise to produce a highest possible change
 	}
-	for _, policy := range scalingRules.Policies {
-		replicasAddedInCurrentPeriod := getReplicasChangePerPeriod(policy.PeriodSeconds, scaleUpEvents)
-		replicasDeletedInCurrentPeriod := getReplicasChangePerPeriod(policy.PeriodSeconds, scaleDownEvents)
-		periodStartReplicas := currentReplicas - replicasAddedInCurrentPeriod + replicasDeletedInCurrentPeriod
-		if policy.Type == autoscalingv2.PodsScalingPolicy {
-			proposed = periodStartReplicas + policy.Value
-		} else if policy.Type == autoscalingv2.PercentScalingPolicy {
-			// the proposal has to be rounded up because the proposed change might not increase the replica count causing the target to never scale up
-			proposed = int32(math.Ceil(float64(periodStartReplicas) * (1 + float64(policy.Value)/100)))
-		}
-		result = selectPolicyFn(result, proposed)
-	}
-	return result
-}
 
-// calculateScaleDownLimitWithBehavior returns the maximum number of pods that could be deleted for the given HPAScalingRules
-func calculateScaleDownLimitWithBehaviors(currentReplicas int32, scaleUpEvents, scaleDownEvents []timestampedScaleEvent, scalingRules *autoscalingv2.HPAScalingRules) int32 {
 	var result int32
-	var proposed int32
 	var selectPolicyFn func(int32, int32) int32
-	if *scalingRules.SelectPolicy == autoscalingv2.DisabledPolicySelect {
-		return currentReplicas // Scaling is disabled
-	} else if *scalingRules.SelectPolicy == autoscalingv2.MinChangePolicySelect {
-		result = math.MinInt32
-		selectPolicyFn = maxInt32 // For scaling down, the lowest change ('min' policy) produces a maximum value
+
+	if *scalingRules.SelectPolicy == autoscalingv2.MinChangePolicySelect {
+		if isScaleUp {
+			result = math.MaxInt32
+			selectPolicyFn = func(a, b int32) int32 { return min(a, b) } // For scaling up, the lowest change ('min' policy) produces a minimum value
+		} else {
+			result = math.MinInt32
+			selectPolicyFn = func(a, b int32) int32 { return max(a, b) } // For scaling down, the lowest change ('min' policy) produces a maximum value
+		}
 	} else {
-		result = math.MaxInt32
-		selectPolicyFn = minInt32 // Use the default policy otherwise to produce a highest possible change
+		if isScaleUp {
+			result = math.MinInt32
+			selectPolicyFn = func(a, b int32) int32 { return max(a, b) } // Use the default policy otherwise to produce a highest possible change
+		} else {
+			result = math.MaxInt32
+			selectPolicyFn = func(a, b int32) int32 { return min(a, b) } // Use the default policy otherwise to produce a highest possible change
+		}
 	}
+
 	for _, policy := range scalingRules.Policies {
 		replicasAddedInCurrentPeriod := getReplicasChangePerPeriod(policy.PeriodSeconds, scaleUpEvents)
 		replicasDeletedInCurrentPeriod := getReplicasChangePerPeriod(policy.PeriodSeconds, scaleDownEvents)
 		periodStartReplicas := currentReplicas - replicasAddedInCurrentPeriod + replicasDeletedInCurrentPeriod
+
+		var proposed int32
 		if policy.Type == autoscalingv2.PodsScalingPolicy {
-			proposed = periodStartReplicas - policy.Value
+			if isScaleUp {
+				proposed = periodStartReplicas + policy.Value
+			} else {
+				proposed = periodStartReplicas - policy.Value
+			}
 		} else if policy.Type == autoscalingv2.PercentScalingPolicy {
-			proposed = int32(float64(periodStartReplicas) * (1 - float64(policy.Value)/100))
+			if isScaleUp {
+				// the proposal has to be rounded up because the proposed change might not increase the replica count causing the target to never scale up
+				proposed = int32(math.Ceil(float64(periodStartReplicas) * (1 + float64(policy.Value)/100)))
+			} else {
+				proposed = int32(float64(periodStartReplicas) * (1 - float64(policy.Value)/100))
+			}
 		}
 		result = selectPolicyFn(result, proposed)
 	}
@@ -1596,12 +1554,13 @@ func setConditionInList(inputList []autoscalingv2.HorizontalPodAutoscalerConditi
 	return resList
 }
 
-// minInt32 is a wrapper around the min builtin to be used as a function value.
-func minInt32(a, b int32) int32 {
-	return min(a, b)
-}
-
-// maxInt32 is a wrapper around the max builtin to be used as a function value.
-func maxInt32(a, b int32) int32 {
-	return max(a, b)
+func (a *HorizontalController) setConditionWithEvent(ctx context.Context, hpa *autoscalingv2.HorizontalPodAutoscaler, eventType string, conditionType autoscalingv2.HorizontalPodAutoscalerConditionType, eventReason string, eventMessage string, conditionStatus v1.ConditionStatus, conditionReason string, conditionMessage string, hpaStatusOriginal *autoscalingv2.HorizontalPodAutoscalerStatus, args ...interface{}) {
+	a.eventRecorder.Event(hpa, eventType, eventReason, eventMessage)
+	setCondition(hpa, conditionType, conditionStatus, conditionReason, conditionMessage, args...)
+	if hpaStatusOriginal == nil {
+		return
+	}
+	if err := a.updateStatusIfNeeded(ctx, hpaStatusOriginal, hpa); err != nil {
+		utilruntime.HandleError(err)
+	}
 }

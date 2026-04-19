@@ -4295,8 +4295,7 @@ func TestConvertDesiredReplicasWithRules(t *testing.T) {
 
 func TestCalculateScaleUpLimitWithScalingRules(t *testing.T) {
 	policy := autoscalingv2.MinChangePolicySelect
-
-	calculated := calculateScaleUpLimitWithScalingRules(1, []timestampedScaleEvent{}, []timestampedScaleEvent{}, &autoscalingv2.HPAScalingRules{
+	calculated := calculateScaleLimitWithScalingRules(1, []timestampedScaleEvent{}, []timestampedScaleEvent{}, &autoscalingv2.HPAScalingRules{
 		StabilizationWindowSeconds: ptr.To(int32(300)),
 		SelectPolicy:               &policy,
 		Policies: []autoscalingv2.HPAScalingPolicy{
@@ -4311,14 +4310,14 @@ func TestCalculateScaleUpLimitWithScalingRules(t *testing.T) {
 				PeriodSeconds: 60,
 			},
 		},
-	})
+	}, true)
 	assert.Equal(t, int32(2), calculated)
 }
 
 func TestCalculateScaleDownLimitWithBehaviors(t *testing.T) {
 	policy := autoscalingv2.MinChangePolicySelect
 
-	calculated := calculateScaleDownLimitWithBehaviors(5, []timestampedScaleEvent{}, []timestampedScaleEvent{}, &autoscalingv2.HPAScalingRules{
+	calculated := calculateScaleLimitWithScalingRules(5, []timestampedScaleEvent{}, []timestampedScaleEvent{}, &autoscalingv2.HPAScalingRules{
 		StabilizationWindowSeconds: ptr.To(int32(300)),
 		SelectPolicy:               &policy,
 		Policies: []autoscalingv2.HPAScalingPolicy{
@@ -4333,7 +4332,7 @@ func TestCalculateScaleDownLimitWithBehaviors(t *testing.T) {
 				PeriodSeconds: 60,
 			},
 		},
-	})
+	},false)
 	assert.Equal(t, int32(3), calculated)
 }
 
