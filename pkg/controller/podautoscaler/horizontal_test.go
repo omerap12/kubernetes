@@ -1509,37 +1509,96 @@ func (tc *testCase) runTest(t *testing.T) {
 	tc.runTestWithController(t, hpaController, informerFactory)
 }
 
-func TestScaleUpContainer(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            3,
-		statusReplicas:          3,
-		expectedDesiredReplicas: 5,
-		metricsTarget: []autoscalingv2.MetricSpec{{
-			Type: autoscalingv2.ContainerResourceMetricSourceType,
-			ContainerResource: &autoscalingv2.ContainerResourceMetricSource{
-				Name: v1.ResourceCPU,
-				Target: autoscalingv2.MetricTarget{
-					Type:               autoscalingv2.UtilizationMetricType,
-					AverageUtilization: ptr.To(int32(30)),
-				},
-				Container: "container1",
+func TestScaleContainerResource(t *testing.T) {
+	tests := []struct {
+		name                    string
+		fixture                 horizontalScenario
+		expectedDesiredReplicas int32
+		expectedActionLabel     monitor.ActionLabel
+	}{
+		{
+			name: "scale up container resource",
+			fixture: horizontalScenario{
+				minReplicas:    2,
+				maxReplicas:    6,
+				specReplicas:   3,
+				statusReplicas: 3,
+				metricsTarget: []autoscalingv2.MetricSpec{{
+					Type: autoscalingv2.ContainerResourceMetricSourceType,
+					ContainerResource: &autoscalingv2.ContainerResourceMetricSource{
+						Name: v1.ResourceCPU,
+						Target: autoscalingv2.MetricTarget{
+							Type:               autoscalingv2.UtilizationMetricType,
+							AverageUtilization: ptr.To(int32(30)),
+						},
+						Container: "container1",
+					},
+				}},
+				reportedLevels:      []uint64{300, 500, 700},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
 			},
-		}},
-		reportedLevels:      []uint64{300, 500, 700},
-		reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		useMetricsAPI:       true,
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelScaleUp,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ContainerResourceMetricSourceType: monitor.ActionLabelScaleUp,
+			expectedDesiredReplicas: 5,
+			expectedActionLabel:     monitor.ActionLabelScaleUp,
 		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ContainerResourceMetricSourceType: monitor.ErrorLabelNone,
+		{
+			name: "scale down container resource",
+			fixture: horizontalScenario{
+				minReplicas:    2,
+				maxReplicas:    6,
+				specReplicas:   5,
+				statusReplicas: 5,
+				metricsTarget: []autoscalingv2.MetricSpec{{
+					Type: autoscalingv2.ContainerResourceMetricSourceType,
+					ContainerResource: &autoscalingv2.ContainerResourceMetricSource{
+						Container: "container2",
+						Name:      v1.ResourceCPU,
+						Target: autoscalingv2.MetricTarget{
+							Type:               autoscalingv2.UtilizationMetricType,
+							AverageUtilization: ptr.To(int32(50)),
+						},
+					},
+				}},
+				reportedLevels:      []uint64{100, 300, 500, 250, 250},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
+				recommendations:     []timestampedRecommendation{},
+			},
+			expectedDesiredReplicas: 3,
+			expectedActionLabel:     monitor.ActionLabelScaleDown,
 		},
 	}
-	tc.runTest(t)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := newHorizontalSetup(t, &tt.fixture)
+
+			hpa := buildHPA(t, &tt.fixture)
+			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
+
+			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
+			require.NoError(t, err)
+
+			scaleUpdated := false
+			for _, action := range setup.scaleClient.Actions() {
+				if action.GetVerb() == "update" {
+					scaleUpdated = true
+					updateAction := action.(core.UpdateAction)
+					scale := updateAction.GetObject().(*autoscalingv1.Scale)
+					assert.Equal(t, tt.expectedDesiredReplicas, scale.Spec.Replicas, "desired replicas should match")
+				}
+			}
+			assert.True(t, scaleUpdated, "scale should have been updated")
+
+			v, err := metricstestutil.GetCounterMetricValue(
+				monitor.ReconciliationsTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone)))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s", tt.expectedActionLabel)
+
+			v, err = metricstestutil.GetCounterMetricValue(
+				monitor.MetricComputationTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone), string(autoscalingv2.ContainerResourceMetricSourceType)))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, v, float64(1), "metric computation metric should be recorded")
+		})
+	}
 }
 
 func TestScaleUpUnreadyNoScale(t *testing.T) {
@@ -2464,39 +2523,6 @@ func TestScaleUpCMExternal(t *testing.T) {
 	}
 }
 
-func TestScaleDownContainerResource(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            5,
-		statusReplicas:          5,
-		expectedDesiredReplicas: 3,
-		reportedLevels:          []uint64{100, 300, 500, 250, 250},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		metricsTarget: []autoscalingv2.MetricSpec{{
-			Type: autoscalingv2.ContainerResourceMetricSourceType,
-			ContainerResource: &autoscalingv2.ContainerResourceMetricSource{
-				Container: "container2",
-				Name:      v1.ResourceCPU,
-				Target: autoscalingv2.MetricTarget{
-					Type:               autoscalingv2.UtilizationMetricType,
-					AverageUtilization: ptr.To(int32(50)),
-				},
-			},
-		}},
-		useMetricsAPI:   true,
-		recommendations: []timestampedRecommendation{},
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelScaleDown,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ContainerResourceMetricSourceType: monitor.ActionLabelScaleDown,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ContainerResourceMetricSourceType: monitor.ErrorLabelNone,
-		},
-	}
-	tc.runTest(t)
-}
 
 func TestScaleUpOneMetricInvalid(t *testing.T) {
 	tc := testCase{
