@@ -1600,67 +1600,91 @@ func TestScaleContainerResource(t *testing.T) {
 	}
 }
 
-func TestScaleUpUnreadyNoScale(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            3,
-		statusReplicas:          3,
-		expectedDesiredReplicas: 3,
-		CPUTarget:               30,
-		CPUCurrent:              40,
-		verifyCPUCurrent:        true,
-		reportedLevels:          []uint64{400, 500, 700},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		reportedPodReadiness:    []v1.ConditionStatus{v1.ConditionTrue, v1.ConditionFalse, v1.ConditionFalse},
-		useMetricsAPI:           true,
-		expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
-			Type:   autoscalingv2.AbleToScale,
-			Status: v1.ConditionTrue,
-			Reason: "ReadyForNewScale",
-		}),
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelNone,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelNone,
+func TestScaleUpUnreadyOrHotCpuNoScale(t *testing.T) {
+	tests := []struct {
+		name    string
+		fixture horizontalScenario
+	}{
+		{
+			name: "unready pods excluded from scaling",
+			fixture: horizontalScenario{
+				minReplicas:          2,
+				maxReplicas:          6,
+				specReplicas:         3,
+				statusReplicas:       3,
+				CPUTarget:            30,
+				reportedLevels:       []uint64{400, 500, 700},
+				reportedCPURequests:  []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
+				reportedPodReadiness: []v1.ConditionStatus{v1.ConditionTrue, v1.ConditionFalse, v1.ConditionFalse},
+			},
 		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
+		{
+			name: "hot CPU pods excluded from scaling",
+			fixture: horizontalScenario{
+				minReplicas:          2,
+				maxReplicas:          6,
+				specReplicas:         3,
+				statusReplicas:       3,
+				CPUTarget:            30,
+				reportedLevels:       []uint64{400, 500, 700},
+				reportedCPURequests:  []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
+				reportedPodReadiness: []v1.ConditionStatus{v1.ConditionTrue, v1.ConditionFalse, v1.ConditionFalse},
+				reportedPodStartTime: []metav1.Time{coolCPUCreationTime(), hotCPUCreationTime(), hotCPUCreationTime()},
+			},
 		},
 	}
-	tc.runTest(t)
-}
 
-func TestScaleUpHotCpuNoScale(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            3,
-		statusReplicas:          3,
-		expectedDesiredReplicas: 3,
-		CPUTarget:               30,
-		CPUCurrent:              40,
-		verifyCPUCurrent:        true,
-		reportedLevels:          []uint64{400, 500, 700},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		reportedPodReadiness:    []v1.ConditionStatus{v1.ConditionTrue, v1.ConditionFalse, v1.ConditionFalse},
-		reportedPodStartTime:    []metav1.Time{coolCPUCreationTime(), hotCPUCreationTime(), hotCPUCreationTime()},
-		useMetricsAPI:           true,
-		expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
-			Type:   autoscalingv2.AbleToScale,
-			Status: v1.ConditionTrue,
-			Reason: "ReadyForNewScale",
-		}),
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelNone,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelNone,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-		},
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := newHorizontalSetup(t, &tt.fixture)
+
+			hpa := buildHPA(t, &tt.fixture)
+			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
+
+			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
+			require.NoError(t, err)
+
+			for _, action := range setup.scaleClient.Actions() {
+				if action.GetVerb() == "update" {
+					t.Fatal("scale should not have been updated")
+				}
+			}
+
+			v, err := metricstestutil.GetCounterMetricValue(
+				monitor.ReconciliationsTotal.WithLabelValues(string(monitor.ActionLabelNone), string(monitor.ErrorLabelNone)))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded")
+
+			v, err = metricstestutil.GetCounterMetricValue(
+				monitor.MetricComputationTotal.WithLabelValues(string(monitor.ActionLabelNone), string(monitor.ErrorLabelNone), string(autoscalingv2.ResourceMetricSourceType)))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, v, float64(1), "metric computation metric should be recorded")
+
+			for _, action := range setup.testClient.Actions() {
+				if action.GetVerb() == "update" && action.GetResource().Resource == "horizontalpodautoscalers" {
+					updatedHPA := action.(core.UpdateAction).GetObject().(*autoscalingv2.HorizontalPodAutoscaler)
+					assert.Equal(t, tt.fixture.specReplicas, updatedHPA.Status.DesiredReplicas, "desired replicas should not change")
+
+					utilization := findCpuUtilization(updatedHPA.Status.CurrentMetrics)
+					if assert.NotNil(t, utilization, "CPU utilization should be reported") {
+						assert.Equal(t, int32(40), *utilization, "CPU utilization should reflect only ready pods")
+					}
+
+					actualConditions := updatedHPA.Status.Conditions
+					for i := range actualConditions {
+						actualConditions[i].Message = ""
+						actualConditions[i].LastTransitionTime = metav1.Time{}
+					}
+					expectedConditions := statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
+						Type:   autoscalingv2.AbleToScale,
+						Status: v1.ConditionTrue,
+						Reason: "ReadyForNewScale",
+					})
+					assert.Equal(t, expectedConditions, actualConditions, "status conditions should match")
+				}
+			}
+		})
 	}
-	tc.runTest(t)
 }
 
 func TestScaleUpCPU(t *testing.T) {
