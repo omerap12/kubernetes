@@ -702,6 +702,7 @@ type horizontalSetup struct {
 	scaleClient     *scalefake.FakeScaleClient
 	testClient      *fake.Clientset
 	eventClient     *fake.Clientset
+	emClient        *emfake.FakeExternalMetricsClient
 	ctx             context.Context
 }
 
@@ -766,6 +767,7 @@ func newHorizontalSetup(t *testing.T, s *horizontalScenario) *horizontalSetup {
 		scaleClient:     testScaleClient,
 		testClient:      testClient,
 		eventClient:     eventClient,
+		emClient:        testEMClient,
 		ctx:             tCtx,
 	}
 }
@@ -6375,100 +6377,151 @@ func TestNormalizeDesiredReplicasWithBehavior(t *testing.T) {
 	}
 }
 
-func TestScaleUpOneMetricEmpty(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            3,
-		statusReplicas:          3,
-		expectedDesiredReplicas: 4,
-		CPUTarget:               30,
-		verifyCPUCurrent:        true,
-		metricsTarget: []autoscalingv2.MetricSpec{
-			{
-				Type: autoscalingv2.ExternalMetricSourceType,
-				External: &autoscalingv2.ExternalMetricSource{
-					Metric: autoscalingv2.MetricIdentifier{
-						Name:     "qps",
-						Selector: &metav1.LabelSelector{},
-					},
-					Target: autoscalingv2.MetricTarget{
-						Type:  autoscalingv2.ValueMetricType,
-						Value: resource.NewMilliQuantity(100, resource.DecimalSI),
-					},
-				},
-			},
-		},
-		reportedLevels:      []uint64{300, 400, 500},
-		reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelScaleUp,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelInternal,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleUp,
-			autoscalingv2.ExternalMetricSourceType: monitor.ActionLabelNone,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-			autoscalingv2.ExternalMetricSourceType: monitor.ErrorLabelInternal,
-		},
-	}
-	_, _, _, testEMClient, _ := tc.prepareTestClient(t)
-	testEMClient.PrependReactor("list", "*", func(action core.Action) (handled bool, ret runtime.Object, err error) {
-		return true, &emapi.ExternalMetricValueList{}, fmt.Errorf("something went wrong")
-	})
-	tc.testEMClient = testEMClient
-	tc.runTest(t)
-}
-
-
-func TestNoScaleDownOneMetricEmpty(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            5,
-		statusReplicas:          5,
-		expectedDesiredReplicas: 5,
-		CPUTarget:               50,
-		metricsTarget: []autoscalingv2.MetricSpec{
-			{
-				Type: autoscalingv2.ExternalMetricSourceType,
-				External: &autoscalingv2.ExternalMetricSource{
-					Metric: autoscalingv2.MetricIdentifier{
-						Name:     "qps",
-						Selector: &metav1.LabelSelector{},
-					},
-					Target: autoscalingv2.MetricTarget{
-						Type:  autoscalingv2.ValueMetricType,
-						Value: resource.NewMilliQuantity(1000, resource.DecimalSI),
+func TestOneMetricEmptyExternalError(t *testing.T) {
+	tests := []struct {
+		name                                  string
+		fixture                               horizontalScenario
+		expectedDesiredReplicas                int32
+		expectedScaleUpdated                  bool
+		expectedActionLabel                   monitor.ActionLabel
+		expectedConditions                    []autoscalingv2.HorizontalPodAutoscalerCondition
+		expectedMetricComputationActionLabels map[autoscalingv2.MetricSourceType]monitor.ActionLabel
+		expectedMetricComputationErrorLabels  map[autoscalingv2.MetricSourceType]monitor.ErrorLabel
+	}{
+		{
+			name: "scale up when one external metric errors",
+			fixture: horizontalScenario{
+				minReplicas:         2,
+				maxReplicas:         6,
+				specReplicas:        3,
+				statusReplicas:      3,
+				CPUTarget:           30,
+				reportedLevels:      []uint64{300, 400, 500},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
+				metricsTarget: []autoscalingv2.MetricSpec{
+					{
+						Type: autoscalingv2.ExternalMetricSourceType,
+						External: &autoscalingv2.ExternalMetricSource{
+							Metric: autoscalingv2.MetricIdentifier{
+								Name:     "qps",
+								Selector: &metav1.LabelSelector{},
+							},
+							Target: autoscalingv2.MetricTarget{
+								Type:  autoscalingv2.ValueMetricType,
+								Value: resource.NewMilliQuantity(100, resource.DecimalSI),
+							},
+						},
 					},
 				},
 			},
+			expectedDesiredReplicas: 4,
+			expectedScaleUpdated:    true,
+			expectedActionLabel:     monitor.ActionLabelScaleUp,
+			expectedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleUp,
+				autoscalingv2.ExternalMetricSourceType: monitor.ActionLabelNone,
+			},
+			expectedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
+				autoscalingv2.ExternalMetricSourceType: monitor.ErrorLabelInternal,
+			},
 		},
-		reportedLevels:      []uint64{100, 300, 500, 250, 250},
-		reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		useMetricsAPI:       true,
-		recommendations:     []timestampedRecommendation{},
-		expectedConditions: []autoscalingv2.HorizontalPodAutoscalerCondition{
-			{Type: autoscalingv2.AbleToScale, Status: v1.ConditionTrue, Reason: "SucceededGetScale"},
-			{Type: autoscalingv2.ScalingActive, Status: v1.ConditionFalse, Reason: "FailedGetExternalMetric"},
-		},
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelNone,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelInternal,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleDown,
-			autoscalingv2.ExternalMetricSourceType: monitor.ActionLabelNone,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-			autoscalingv2.ExternalMetricSourceType: monitor.ErrorLabelInternal,
+		{
+			name: "no scale down when one external metric errors",
+			fixture: horizontalScenario{
+				minReplicas:         2,
+				maxReplicas:         6,
+				specReplicas:        5,
+				statusReplicas:      5,
+				CPUTarget:           50,
+				reportedLevels:      []uint64{100, 300, 500, 250, 250},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
+				metricsTarget: []autoscalingv2.MetricSpec{
+					{
+						Type: autoscalingv2.ExternalMetricSourceType,
+						External: &autoscalingv2.ExternalMetricSource{
+							Metric: autoscalingv2.MetricIdentifier{
+								Name:     "qps",
+								Selector: &metav1.LabelSelector{},
+							},
+							Target: autoscalingv2.MetricTarget{
+								Type:  autoscalingv2.ValueMetricType,
+								Value: resource.NewMilliQuantity(1000, resource.DecimalSI),
+							},
+						},
+					},
+				},
+				recommendations: []timestampedRecommendation{},
+			},
+			expectedDesiredReplicas: 5,
+			expectedScaleUpdated:    false,
+			expectedActionLabel:     monitor.ActionLabelNone,
+			expectedConditions: []autoscalingv2.HorizontalPodAutoscalerCondition{
+				{Type: autoscalingv2.AbleToScale, Status: v1.ConditionTrue, Reason: "SucceededGetScale"},
+				{Type: autoscalingv2.ScalingActive, Status: v1.ConditionFalse, Reason: "FailedGetExternalMetric"},
+			},
+			expectedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleDown,
+				autoscalingv2.ExternalMetricSourceType: monitor.ActionLabelNone,
+			},
+			expectedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
+				autoscalingv2.ExternalMetricSourceType: monitor.ErrorLabelInternal,
+			},
 		},
 	}
-	_, _, _, testEMClient, _ := tc.prepareTestClient(t)
-	testEMClient.PrependReactor("list", "*", func(action core.Action) (handled bool, ret runtime.Object, err error) {
-		return true, &emapi.ExternalMetricValueList{}, fmt.Errorf("something went wrong")
-	})
-	tc.testEMClient = testEMClient
-	tc.runTest(t)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := newHorizontalSetup(t, &tt.fixture)
+
+			setup.emClient.PrependReactor("list", "*", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+				return true, &emapi.ExternalMetricValueList{}, fmt.Errorf("something went wrong")
+			})
+
+			hpa := buildHPA(t, &tt.fixture)
+			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
+
+			_ = setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
+
+			scaleUpdated := false
+			for _, action := range setup.scaleClient.Actions() {
+				if action.GetVerb() == "update" {
+					scaleUpdated = true
+					scale := action.(core.UpdateAction).GetObject().(*autoscalingv1.Scale)
+					assert.Equal(t, tt.expectedDesiredReplicas, scale.Spec.Replicas, "desired replicas should match")
+				}
+			}
+			assert.Equal(t, tt.expectedScaleUpdated, scaleUpdated, "scale update expectation mismatch")
+
+			v, err := metricstestutil.GetCounterMetricValue(
+				monitor.ReconciliationsTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelInternal)))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s error=internal", tt.expectedActionLabel)
+
+			for metricType, expectedAction := range tt.expectedMetricComputationActionLabels {
+				expectedError := tt.expectedMetricComputationErrorLabels[metricType]
+				v, err := metricstestutil.GetCounterMetricValue(
+					monitor.MetricComputationTotal.WithLabelValues(string(expectedAction), string(expectedError), string(metricType)))
+				require.NoError(t, err)
+				assert.GreaterOrEqual(t, v, float64(1), "metric computation metric should be recorded for type=%s action=%s error=%s", metricType, expectedAction, expectedError)
+			}
+
+			if tt.expectedConditions != nil {
+				for _, action := range setup.testClient.Actions() {
+					if action.GetVerb() == "update" && action.GetResource().Resource == "horizontalpodautoscalers" {
+						updatedHPA := action.(core.UpdateAction).GetObject().(*autoscalingv2.HorizontalPodAutoscaler)
+						actualConditions := updatedHPA.Status.Conditions
+						for i := range actualConditions {
+							actualConditions[i].Message = ""
+							actualConditions[i].LastTransitionTime = metav1.Time{}
+						}
+						assert.Equal(t, tt.expectedConditions, actualConditions, "status conditions should match")
+					}
+				}
+			}
+		})
+	}
 }
 
 func TestMultipleHPAs(t *testing.T) {
