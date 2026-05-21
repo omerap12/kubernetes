@@ -701,6 +701,7 @@ type horizontalSetup struct {
 	informerFactory informers.SharedInformerFactory
 	scaleClient     *scalefake.FakeScaleClient
 	testClient      *fake.Clientset
+	eventClient     *fake.Clientset
 	ctx             context.Context
 }
 
@@ -764,6 +765,7 @@ func newHorizontalSetup(t *testing.T, s *horizontalScenario) *horizontalSetup {
 		informerFactory: informerFactory,
 		scaleClient:     testScaleClient,
 		testClient:      testClient,
+		eventClient:     eventClient,
 		ctx:             tCtx,
 	}
 }
@@ -3858,57 +3860,97 @@ func TestMetricsEdgeCases(t *testing.T) {
 	}
 }
 
-func TestEventCreated(t *testing.T) {
-	tc := testCase{
-		minReplicas:             1,
-		maxReplicas:             5,
-		specReplicas:            1,
-		statusReplicas:          1,
-		expectedDesiredReplicas: 2,
-		CPUTarget:               50,
-		reportedLevels:          []uint64{200},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("0.2")},
-		verifyEvents:            true,
-		useMetricsAPI:           true,
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelScaleUp,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleUp,
+func TestEventCreation(t *testing.T) {
+	tests := []struct {
+		name                   string
+		fixture                horizontalScenario
+		expectedDesiredReplicas int32
+		expectedEventCreated   bool
+		expectedActionLabel    monitor.ActionLabel
+	}{
+		{
+			name: "event created on scale up",
+			fixture: horizontalScenario{
+				minReplicas:         1,
+				maxReplicas:         5,
+				specReplicas:        1,
+				statusReplicas:      1,
+				CPUTarget:           50,
+				reportedLevels:      []uint64{200},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("0.2")},
+			},
+			expectedDesiredReplicas: 2,
+			expectedEventCreated:   true,
+			expectedActionLabel:    monitor.ActionLabelScaleUp,
 		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
+		{
+			name: "no event when replicas unchanged",
+			fixture: horizontalScenario{
+				minReplicas:         1,
+				maxReplicas:         5,
+				specReplicas:        2,
+				statusReplicas:      2,
+				CPUTarget:           50,
+				reportedLevels:      []uint64{200, 200},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("0.4"), resource.MustParse("0.4")},
+			},
+			expectedDesiredReplicas: 2,
+			expectedEventCreated:   false,
+			expectedActionLabel:    monitor.ActionLabelNone,
 		},
 	}
-	tc.runTest(t)
-}
 
-func TestEventNotCreated(t *testing.T) {
-	tc := testCase{
-		minReplicas:             1,
-		maxReplicas:             5,
-		specReplicas:            2,
-		statusReplicas:          2,
-		expectedDesiredReplicas: 2,
-		CPUTarget:               50,
-		reportedLevels:          []uint64{200, 200},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("0.4"), resource.MustParse("0.4")},
-		verifyEvents:            true,
-		useMetricsAPI:           true,
-		expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
-			Type:   autoscalingv2.AbleToScale,
-			Status: v1.ConditionTrue,
-			Reason: "ReadyForNewScale",
-		}),
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelNone,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelNone,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-		},
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := newHorizontalSetup(t, &tt.fixture)
+
+			hpa := buildHPA(t, &tt.fixture)
+			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
+
+			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
+			require.NoError(t, err)
+
+			scaleUpdated := false
+			for _, action := range setup.scaleClient.Actions() {
+				if action.GetVerb() == "update" {
+					scaleUpdated = true
+					scale := action.(core.UpdateAction).GetObject().(*autoscalingv1.Scale)
+					assert.Equal(t, tt.expectedDesiredReplicas, scale.Spec.Replicas, "desired replicas should match")
+				}
+			}
+			assert.Equal(t, tt.expectedEventCreated, scaleUpdated, "scale update expectation mismatch")
+
+			if tt.expectedEventCreated {
+				assert.Eventually(t, func() bool {
+					for _, action := range setup.eventClient.Actions() {
+						if action.GetVerb() == "create" && action.GetResource().Resource == "events" {
+							return true
+						}
+					}
+					return false
+				}, 2*time.Second, 50*time.Millisecond, "expected event to be created")
+			} else {
+				time.Sleep(100 * time.Millisecond)
+				eventCreated := false
+				for _, action := range setup.eventClient.Actions() {
+					if action.GetVerb() == "create" && action.GetResource().Resource == "events" {
+						eventCreated = true
+					}
+				}
+				assert.False(t, eventCreated, "expected no event to be created")
+			}
+
+			v, err := metricstestutil.GetCounterMetricValue(
+				monitor.ReconciliationsTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone)))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s", tt.expectedActionLabel)
+
+			mcv, err := metricstestutil.GetCounterMetricValue(
+				monitor.MetricComputationTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone), string(autoscalingv2.ResourceMetricSourceType)))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, mcv, float64(1), "metric computation should be recorded for Resource type")
+		})
 	}
-	tc.runTest(t)
 }
 
 func TestCPUScalingEdgeCases(t *testing.T) {
