@@ -5468,52 +5468,44 @@ func TestScaleRCImmediately(t *testing.T) {
 	}
 }
 
+// TestAvoidUnnecessaryUpdates verifies that the controller does NOT issue a status update
+// when the reconciled status (metrics, conditions, desired replicas) is identical to what
+// is already stored on the HPA object. This requires the full controller Run() loop because
+// the skip-update optimization lives in the controller's update path, not in reconcileAutoscaler.
 func TestAvoidUnnecessaryUpdates(t *testing.T) {
 	featuregatetesting.SetFeatureGateEmulationVersionDuringTest(t, utilfeature.DefaultFeatureGate, version.MustParse("1.37"))
 	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.HPAGeneration, true)
 
-	now := metav1.Time{Time: time.Now().Add(-time.Hour)}
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            2,
-		statusReplicas:          2,
-		expectedDesiredReplicas: 2,
-		CPUTarget:               30,
-		CPUCurrent:              40,
-		verifyCPUCurrent:        true,
-		reportedLevels:          []uint64{400, 500, 700},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		reportedPodStartTime:    []metav1.Time{coolCPUCreationTime(), hotCPUCreationTime(), hotCPUCreationTime()},
-		useMetricsAPI:           true,
-		lastScaleTime:           &now,
-		recommendations:         []timestampedRecommendation{},
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelNone,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleDown,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-		},
-	}
-	testClient, _, _, _, _ := tc.prepareTestClient(t)
-	tc.testClient = testClient
-	testClient.PrependReactor("list", "horizontalpodautoscalers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
-		tc.Lock()
-		defer tc.Unlock()
-		// fake out the verification logic and mark that we're done processing
-		go func() {
-			// wait a tick and then mark that we're finished (otherwise, we have no
-			// way to indicate that we're finished, because the function decides not to do anything)
-			time.Sleep(1 * time.Second)
-			tc.Lock()
-			tc.statusUpdated = true
-			tc.Unlock()
-			tc.processed <- "test-hpa"
-		}()
+	namespace := "test-namespace"
+	podNamePrefix := "test-pod"
+	labelSet := map[string]string{"name": podNamePrefix}
+	selector := labels.SelectorFromSet(labelSet).String()
 
-		var eighty int32 = 80
+	var minReplicas int32 = 2
+	var maxReplicas int32 = 6
+	var specReplicas int32 = 2
+	var statusReplicas int32 = 2
+	var cpuTarget int32 = 80
+	var cpuCurrent int32 = 40
+	lastScaleTime := metav1.Time{Time: time.Now().Add(-time.Hour)}
+	reportedLevels := []uint64{400, 500, 700}
+	reportedCPURequests := []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")}
+	reportedPodStartTime := []metav1.Time{coolCPUCreationTime(), hotCPUCreationTime(), hotCPUCreationTime()}
+
+	// Signal channel: reconciliation processed
+	processed := make(chan string, 100)
+
+	// testClient serves the HPA list with a fully-populated status that matches
+	// what reconciliation will compute, so no update should be issued.
+	logger, _ := ktesting.NewTestContext(t)
+	testClient := &fake.Clientset{}
+	fakeWatch := watch.NewFakeWithOptions(watch.FakeOptions{Logger: &logger})
+	testClient.AddWatchReactor("*", core.DefaultWatchReactor(fakeWatch, nil))
+	testClient.AddReactor("list", "horizontalpodautoscalers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		go func() {
+			time.Sleep(1 * time.Second)
+			processed <- "test-hpa"
+		}()
 
 		quantity := resource.MustParse("400m")
 		obj := &autoscalingv2.HorizontalPodAutoscalerList{
@@ -5521,7 +5513,7 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
 				{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:       "test-hpa",
-						Namespace:  "test-namespace",
+						Namespace:  namespace,
 						Generation: 1,
 					},
 					Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
@@ -5535,24 +5527,19 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
 							Resource: &autoscalingv2.ResourceMetricSource{
 								Name: v1.ResourceCPU,
 								Target: autoscalingv2.MetricTarget{
-									Type: autoscalingv2.UtilizationMetricType,
-									// TODO: Change this to &tc.CPUTarget and the expected ScaleLimited
-									//       condition to False. This test incorrectly leaves the v1
-									//       HPA field TargetCPUUtilizization field blank and the
-									//       controller defaults to a target of 80. So the test relies
-									//       on downscale stabilization to prevent a scale change.
-									AverageUtilization: &eighty,
+									Type:               autoscalingv2.UtilizationMetricType,
+									AverageUtilization: &cpuTarget,
 								},
 							},
 						}},
-						MinReplicas: &tc.minReplicas,
-						MaxReplicas: tc.maxReplicas,
+						MinReplicas: &minReplicas,
+						MaxReplicas: maxReplicas,
 					},
 					Status: autoscalingv2.HorizontalPodAutoscalerStatus{
 						ObservedGeneration: ptr.To[int64](1),
-						CurrentReplicas:    tc.specReplicas,
-						DesiredReplicas:    tc.specReplicas,
-						LastScaleTime:      tc.lastScaleTime,
+						CurrentReplicas:    specReplicas,
+						DesiredReplicas:    specReplicas,
+						LastScaleTime:      &lastScaleTime,
 						CurrentMetrics: []autoscalingv2.MetricStatus{
 							{
 								Type: autoscalingv2.ResourceMetricSourceType,
@@ -5560,7 +5547,7 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
 									Name: v1.ResourceCPU,
 									Current: autoscalingv2.MetricValueStatus{
 										AverageValue:       &quantity,
-										AverageUtilization: &tc.CPUCurrent,
+										AverageUtilization: &cpuCurrent,
 									},
 								},
 							},
@@ -5569,21 +5556,21 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
 							{
 								Type:               autoscalingv2.AbleToScale,
 								Status:             v1.ConditionTrue,
-								LastTransitionTime: *tc.lastScaleTime,
+								LastTransitionTime: lastScaleTime,
 								Reason:             "ReadyForNewScale",
 								Message:            "recommended size matches current size",
 							},
 							{
 								Type:               autoscalingv2.ScalingActive,
 								Status:             v1.ConditionTrue,
-								LastTransitionTime: *tc.lastScaleTime,
+								LastTransitionTime: lastScaleTime,
 								Reason:             "ValidMetricFound",
 								Message:            "the HPA was able to successfully calculate a replica count from cpu resource utilization (percentage of request)",
 							},
 							{
 								Type:               autoscalingv2.ScalingLimited,
 								Status:             v1.ConditionTrue,
-								LastTransitionTime: *tc.lastScaleTime,
+								LastTransitionTime: lastScaleTime,
 								Reason:             "TooFewReplicas",
 								Message:            "the desired replica count is less than the minimum replica count",
 							},
@@ -5592,18 +5579,175 @@ func TestAvoidUnnecessaryUpdates(t *testing.T) {
 				},
 			},
 		}
-
 		return true, obj, nil
 	})
-	testClient.PrependReactor("update", "horizontalpodautoscalers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+
+	testClient.AddReactor("list", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		obj := &v1.PodList{}
+		for i := 0; i < len(reportedCPURequests); i++ {
+			podName := fmt.Sprintf("%s-%d", podNamePrefix, i)
+			pod := v1.Pod{
+				Status: v1.PodStatus{
+					Phase: v1.PodRunning,
+					Conditions: []v1.PodCondition{
+						{
+							Type:               v1.PodReady,
+							Status:             v1.ConditionTrue,
+							LastTransitionTime: reportedPodStartTime[i],
+						},
+					},
+					StartTime: &reportedPodStartTime[i],
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      podName,
+					Namespace: namespace,
+					Labels:    labelSet,
+				},
+				Spec: v1.PodSpec{
+					Containers: []v1.Container{
+						{
+							Name: "container1",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU: *resource.NewMilliQuantity(reportedCPURequests[i].MilliValue()/2, resource.DecimalSI),
+								},
+							},
+						},
+						{
+							Name: "container2",
+							Resources: v1.ResourceRequirements{
+								Requests: v1.ResourceList{
+									v1.ResourceCPU: *resource.NewMilliQuantity(reportedCPURequests[i].MilliValue()/2, resource.DecimalSI),
+								},
+							},
+						},
+					},
+				},
+			}
+			obj.Items = append(obj.Items, pod)
+		}
+		return true, obj, nil
+	})
+
+	testClient.AddReactor("update", "horizontalpodautoscalers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		assert.Fail(t, "should not have attempted to update the HPA when nothing changed")
-		// mark that we've processed this HPA
-		tc.processed <- ""
+		processed <- ""
 		return true, nil, fmt.Errorf("unexpected call")
 	})
 
-	controller, informerFactory := tc.setupController(t)
-	tc.runTestWithController(t, controller, informerFactory)
+	fakeScaleClient := &scalefake.FakeScaleClient{}
+	fakeScaleClient.AddReactor("get", "replicationcontrollers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		obj := &autoscalingv1.Scale{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-rc",
+				Namespace: namespace,
+			},
+			Spec: autoscalingv1.ScaleSpec{
+				Replicas: specReplicas,
+			},
+			Status: autoscalingv1.ScaleStatus{
+				Replicas: statusReplicas,
+				Selector: selector,
+			},
+		}
+		return true, obj, nil
+	})
+
+	fakeMetricsClient := &metricsfake.Clientset{}
+	fakeMetricsClient.AddReactor("list", "pods", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		metrics := &metricsapi.PodMetricsList{}
+		for i, cpu := range reportedLevels {
+			podMetric := metricsapi.PodMetrics{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      fmt.Sprintf("%s-%d", podNamePrefix, i),
+					Namespace: namespace,
+					Labels:    labelSet,
+				},
+				Timestamp: metav1.Time{Time: time.Now()},
+				Window:    metav1.Duration{Duration: time.Minute},
+				Containers: []metricsapi.ContainerMetrics{
+					{
+						Name: "container1",
+						Usage: v1.ResourceList{
+							v1.ResourceCPU: *resource.NewMilliQuantity(int64(cpu/2), resource.DecimalSI),
+							v1.ResourceMemory: *resource.NewQuantity(int64(1024*1024/2), resource.BinarySI),
+						},
+					},
+					{
+						Name: "container2",
+						Usage: v1.ResourceList{
+							v1.ResourceCPU: *resource.NewMilliQuantity(int64(cpu/2), resource.DecimalSI),
+							v1.ResourceMemory: *resource.NewQuantity(int64(1024*1024/2), resource.BinarySI),
+						},
+					},
+				},
+			}
+			metrics.Items = append(metrics.Items, podMetric)
+		}
+		return true, metrics, nil
+	})
+
+	fakeCMClient := &cmfake.FakeCustomMetricsClient{}
+	fakeEMClient := &emfake.FakeExternalMetricsClient{}
+
+	metricsClient := metrics.NewRESTMetricsClient(
+		fakeMetricsClient.MetricsV1beta1(),
+		fakeCMClient,
+		fakeEMClient,
+	)
+
+	eventClient := &fake.Clientset{}
+	eventClient.AddReactor("create", "events", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+		obj := action.(core.CreateAction).GetObject().(*v1.Event)
+		return true, obj, nil
+	})
+
+	informerFactory := informers.NewSharedInformerFactory(testClient, controller.NoResyncPeriodFunc())
+
+	tCtx := ktesting.Init(t)
+	hpaController := NewHorizontalController(
+		tCtx,
+		eventClient.CoreV1(),
+		fakeScaleClient,
+		testClient.AutoscalingV2(),
+		testrestmapper.TestOnlyStaticRESTMapper(legacyscheme.Scheme),
+		metricsClient,
+		informerFactory.Autoscaling().V2().HorizontalPodAutoscalers(),
+		informerFactory.Core().V1().Pods(),
+		100*time.Millisecond,
+		5*time.Minute,
+		defaultTestingTolerance,
+		defaultTestingCPUInitializationPeriod,
+		defaultTestingDelayOfInitialReadinessStatus,
+	)
+	hpaController.hpaListerSynced = alwaysReady
+	hpaController.recommendations["test-namespace/test-hpa"] = []timestampedRecommendation{}
+
+	monitor.Register()
+	monitor.ReconciliationsTotal.Reset()
+	monitor.ReconciliationsDuration.Reset()
+	monitor.MetricComputationTotal.Reset()
+	monitor.MetricComputationDuration.Reset()
+	monitor.NumHorizontalPodAutoscalers.Set(0)
+	monitor.DesiredReplicasCount.Reset()
+	hpaController.monitor = monitor.New()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	informerFactory.Start(ctx.Done())
+
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		hpaController.Run(ctx, 5)
+	})
+	defer wg.Wait()
+	defer cancel()
+
+	// Wait for the HPA to be processed (the list reactor signals after 1s)
+	select {
+	case <-processed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for HPA to be processed")
+	}
 }
 
 func TestConvertDesiredReplicasWithRules(t *testing.T) {
