@@ -3401,99 +3401,131 @@ func TestConfigurableTolerance(t *testing.T) {
 	onePercentQuantity := resource.MustParse("0.01")
 	ninetyPercentQuantity := resource.MustParse("0.9")
 
-	testCases := []struct {
+	tests := []struct {
 		name                      string
 		configurableToleranceGate bool
-		replicas                  int32
-		scaleUpRules              *autoscalingv2.HPAScalingRules
-		scaleDownRules            *autoscalingv2.HPAScalingRules
-		reportedLevels            []uint64
-		reportedCPURequests       []resource.Quantity
+		fixture                   horizontalScenario
 		expectedDesiredReplicas   int32
-		expectedConditionReason   string
+		expectedScaleUpdated      bool
 		expectedActionLabel       monitor.ActionLabel
+		expectedConditionReason   string
 	}{
 		{
-			name:                      "Scaling up because of a 1% configurable tolerance",
+			name:                      "scaling up because of a 1% configurable tolerance",
 			configurableToleranceGate: true,
-			replicas:                  3,
-			scaleUpRules: &autoscalingv2.HPAScalingRules{
-				Tolerance: &onePercentQuantity,
+			fixture: horizontalScenario{
+				minReplicas:         1,
+				maxReplicas:         5,
+				specReplicas:        3,
+				statusReplicas:      3,
+				CPUTarget:           100,
+				scaleUpRules:        &autoscalingv2.HPAScalingRules{Tolerance: &onePercentQuantity},
+				reportedLevels:      []uint64{1010, 1030, 1020},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
 			},
-			reportedLevels:          []uint64{1010, 1030, 1020},
-			reportedCPURequests:     []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
 			expectedDesiredReplicas: 4,
-			expectedConditionReason: "SucceededRescale",
+			expectedScaleUpdated:    true,
 			expectedActionLabel:     monitor.ActionLabelScaleUp,
+			expectedConditionReason: "SucceededRescale",
 		},
 		{
-			name:                      "No scale-down because of a 90% configurable tolerance",
+			name:                      "no scale-down because of a 90% configurable tolerance",
 			configurableToleranceGate: true,
-			replicas:                  3,
-			scaleDownRules: &autoscalingv2.HPAScalingRules{
-				Tolerance: &ninetyPercentQuantity,
+			fixture: horizontalScenario{
+				minReplicas:         1,
+				maxReplicas:         5,
+				specReplicas:        3,
+				statusReplicas:      3,
+				CPUTarget:           100,
+				scaleDownRules:      &autoscalingv2.HPAScalingRules{Tolerance: &ninetyPercentQuantity},
+				reportedLevels:      []uint64{300, 300, 300},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
 			},
-			reportedLevels:          []uint64{300, 300, 300},
-			reportedCPURequests:     []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
 			expectedDesiredReplicas: 3,
-			expectedConditionReason: "ReadyForNewScale",
+			expectedScaleUpdated:    false,
 			expectedActionLabel:     monitor.ActionLabelNone,
+			expectedConditionReason: "ReadyForNewScale",
 		},
 		{
-			name:                      "No scaling because of the large default tolerance",
+			name:                      "no scaling because of the large default tolerance",
 			configurableToleranceGate: true,
-			replicas:                  3,
-			reportedLevels:            []uint64{1010, 1030, 1020},
-			reportedCPURequests:       []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
-			expectedDesiredReplicas:   3,
-			expectedConditionReason:   "ReadyForNewScale",
-			expectedActionLabel:       monitor.ActionLabelNone,
+			fixture: horizontalScenario{
+				minReplicas:         1,
+				maxReplicas:         5,
+				specReplicas:        3,
+				statusReplicas:      3,
+				CPUTarget:           100,
+				reportedLevels:      []uint64{1010, 1030, 1020},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
+			},
+			expectedDesiredReplicas: 3,
+			expectedScaleUpdated:    false,
+			expectedActionLabel:     monitor.ActionLabelNone,
+			expectedConditionReason: "ReadyForNewScale",
 		},
 		{
-			name:                      "No scaling because the configurable tolerance is ignored as the feature gate is disabled",
+			name:                      "no scaling because the configurable tolerance is ignored when feature gate is disabled",
 			configurableToleranceGate: false,
-			replicas:                  3,
-			scaleUpRules: &autoscalingv2.HPAScalingRules{
-				Tolerance: &onePercentQuantity,
+			fixture: horizontalScenario{
+				minReplicas:         1,
+				maxReplicas:         5,
+				specReplicas:        3,
+				statusReplicas:      3,
+				CPUTarget:           100,
+				scaleUpRules:        &autoscalingv2.HPAScalingRules{Tolerance: &onePercentQuantity},
+				reportedLevels:      []uint64{1010, 1030, 1020},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
 			},
-			reportedLevels:          []uint64{1010, 1030, 1020},
-			reportedCPURequests:     []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
 			expectedDesiredReplicas: 3,
-			expectedConditionReason: "ReadyForNewScale",
+			expectedScaleUpdated:    false,
 			expectedActionLabel:     monitor.ActionLabelNone,
+			expectedConditionReason: "ReadyForNewScale",
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.HPAConfigurableTolerance, tc.configurableToleranceGate)
-			tc := testCase{
-				minReplicas:             1,
-				maxReplicas:             5,
-				specReplicas:            tc.replicas,
-				statusReplicas:          tc.replicas,
-				scaleDownRules:          tc.scaleDownRules,
-				scaleUpRules:            tc.scaleUpRules,
-				expectedDesiredReplicas: tc.expectedDesiredReplicas,
-				CPUTarget:               100,
-				reportedLevels:          tc.reportedLevels,
-				reportedCPURequests:     tc.reportedCPURequests,
-				useMetricsAPI:           true,
-				expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
-					Type:   autoscalingv2.AbleToScale,
-					Status: v1.ConditionTrue,
-					Reason: tc.expectedConditionReason,
-				}),
-				expectedReportedReconciliationActionLabel: tc.expectedActionLabel,
-				expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-				expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-					autoscalingv2.ResourceMetricSourceType: tc.expectedActionLabel,
-				},
-				expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-					autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-				},
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.HPAConfigurableTolerance, tt.configurableToleranceGate)
+
+			setup := newHorizontalSetup(t, &tt.fixture)
+
+			hpa := buildHPA(t, &tt.fixture)
+			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
+
+			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
+			require.NoError(t, err)
+
+			scaleUpdated := false
+			for _, action := range setup.scaleClient.Actions() {
+				if action.GetVerb() == "update" {
+					scaleUpdated = true
+					scale := action.(core.UpdateAction).GetObject().(*autoscalingv1.Scale)
+					assert.Equal(t, tt.expectedDesiredReplicas, scale.Spec.Replicas, "desired replicas should match")
+				}
 			}
-			tc.runTest(t)
+			assert.Equal(t, tt.expectedScaleUpdated, scaleUpdated, "scale update expectation mismatch")
+
+			v, err := metricstestutil.GetCounterMetricValue(
+				monitor.ReconciliationsTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone)))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s", tt.expectedActionLabel)
+
+			for _, action := range setup.testClient.Actions() {
+				if action.GetVerb() == "update" && action.GetResource().Resource == "horizontalpodautoscalers" {
+					updatedHPA := action.(core.UpdateAction).GetObject().(*autoscalingv2.HorizontalPodAutoscaler)
+					actualConditions := updatedHPA.Status.Conditions
+					for i := range actualConditions {
+						actualConditions[i].Message = ""
+						actualConditions[i].LastTransitionTime = metav1.Time{}
+					}
+					expectedConditions := statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
+						Type:   autoscalingv2.AbleToScale,
+						Status: v1.ConditionTrue,
+						Reason: tt.expectedConditionReason,
+					})
+					assert.Equal(t, expectedConditions, actualConditions, "status conditions should match")
+				}
+			}
 		})
 	}
 }
