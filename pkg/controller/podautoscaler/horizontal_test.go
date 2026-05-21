@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/version"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
@@ -6612,10 +6613,15 @@ func TestReconciliationDurationIsRecorded(t *testing.T) {
 			require.NoError(t, err)
 			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s error=%s", actionStr, errorStr)
 
-			count, err := metricstestutil.GetHistogramMetricCount(
-				monitor.ReconciliationsDuration.WithLabelValues(actionStr, errorStr))
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, count, uint64(1), "reconciliation duration should be recorded for action=%s error=%s", actionStr, errorStr)
+			if err := wait.PollUntilContextTimeout(setup.ctx, 20*time.Millisecond, 100*time.Millisecond, true, func(ctx context.Context) (done bool, err error) {
+				count, err := metricstestutil.GetHistogramMetricCount(monitor.ReconciliationsDuration.WithLabelValues(actionStr, errorStr))
+				if err != nil {
+					return false, nil
+				}
+				return count>=1, nil
+			}); err != nil {
+				t.Fatalf("%s metric was not recorded for action=%s, error=%s", monitor.ReconciliationsDuration.Name, actionStr, errorStr)
+			}
 
 			for metricType, expectedAction := range tt.expectedMetricComputationActionLabels {
 				expectedError := tt.expectedMetricComputationErrorLabels[metricType]
