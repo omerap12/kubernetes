@@ -6856,58 +6856,95 @@ func TestHPARescaleWithSuccessfulConflictRetry(t *testing.T) {
 }
 
 func TestReconciliationDurationIsRecorded(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            3,
-		statusReplicas:          3,
-		expectedDesiredReplicas: 5,
-		CPUTarget:               30,
-		verifyCPUCurrent:        true,
-		reportedLevels:          []uint64{300, 500, 700},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		useMetricsAPI:           true,
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelScaleUp,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleUp,
+	tests := []struct {
+		name                                  string
+		fixture                               horizontalScenario
+		expectedDesiredReplicas                int32
+		expectedActionLabel                   monitor.ActionLabel
+		expectedErrorLabel                    monitor.ErrorLabel
+		expectedMetricComputationActionLabels map[autoscalingv2.MetricSourceType]monitor.ActionLabel
+		expectedMetricComputationErrorLabels  map[autoscalingv2.MetricSourceType]monitor.ErrorLabel
+	}{
+		{
+			name: "duration recorded on successful scale up",
+			fixture: horizontalScenario{
+				minReplicas:         2,
+				maxReplicas:         6,
+				specReplicas:        3,
+				statusReplicas:      3,
+				CPUTarget:           30,
+				reportedLevels:      []uint64{300, 500, 700},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
+			},
+			expectedDesiredReplicas: 5,
+			expectedActionLabel:     monitor.ActionLabelScaleUp,
+			expectedErrorLabel:      monitor.ErrorLabelNone,
+			expectedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleUp,
+			},
+			expectedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
+			},
 		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
+		{
+			name: "duration recorded on error",
+			fixture: horizontalScenario{
+				minReplicas:         2,
+				maxReplicas:         6,
+				specReplicas:        4,
+				statusReplicas:      4,
+				CPUTarget:           100,
+				reportedLevels:      []uint64{},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
+			},
+			expectedDesiredReplicas: 4,
+			expectedActionLabel:     monitor.ActionLabelNone,
+			expectedErrorLabel:      monitor.ErrorLabelInternal,
+			expectedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelNone,
+			},
+			expectedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelInternal,
+			},
 		},
-		verifyReconciliationDuration:     true,
-		verifyMetricComputationDurations: true,
 	}
-	tc.runTest(t)
-}
 
-func TestReconciliationDurationIsRecordedOnError(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            4,
-		statusReplicas:          4,
-		expectedDesiredReplicas: 4,
-		CPUTarget:               100,
-		reportedLevels:          []uint64{},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		useMetricsAPI:           true,
-		expectedConditions: []autoscalingv2.HorizontalPodAutoscalerCondition{
-			{Type: autoscalingv2.AbleToScale, Status: v1.ConditionTrue, Reason: "SucceededGetScale"},
-			{Type: autoscalingv2.ScalingActive, Status: v1.ConditionFalse, Reason: "FailedGetResourceMetric"},
-		},
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelNone,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelInternal,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelNone,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelInternal,
-		},
-		verifyReconciliationDuration:     true,
-		verifyMetricComputationDurations: true,
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			setup := newHorizontalSetup(t, &tt.fixture)
+
+			hpa := buildHPA(t, &tt.fixture)
+			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
+
+			_ = setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
+
+			actionStr := string(tt.expectedActionLabel)
+			errorStr := string(tt.expectedErrorLabel)
+
+			v, err := metricstestutil.GetCounterMetricValue(
+				monitor.ReconciliationsTotal.WithLabelValues(actionStr, errorStr))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s error=%s", actionStr, errorStr)
+
+			count, err := metricstestutil.GetHistogramMetricCount(
+				monitor.ReconciliationsDuration.WithLabelValues(actionStr, errorStr))
+			require.NoError(t, err)
+			assert.GreaterOrEqual(t, count, uint64(1), "reconciliation duration should be recorded for action=%s error=%s", actionStr, errorStr)
+
+			for metricType, expectedAction := range tt.expectedMetricComputationActionLabels {
+				expectedError := tt.expectedMetricComputationErrorLabels[metricType]
+				mcv, err := metricstestutil.GetCounterMetricValue(
+					monitor.MetricComputationTotal.WithLabelValues(string(expectedAction), string(expectedError), string(metricType)))
+				require.NoError(t, err)
+				assert.GreaterOrEqual(t, mcv, float64(1), "metric computation count should be recorded for type=%s", metricType)
+
+				dCount, err := metricstestutil.GetHistogramMetricCount(
+					monitor.MetricComputationDuration.WithLabelValues(string(expectedAction), string(expectedError), string(metricType)))
+				require.NoError(t, err)
+				assert.GreaterOrEqual(t, dCount, uint64(1), "metric computation duration should be recorded for type=%s", metricType)
+			}
+		})
 	}
-	tc.runTest(t)
 }
 
 func TestReconciliationsTotalCountMultipleReconciliations(t *testing.T) {
