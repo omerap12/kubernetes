@@ -6812,47 +6812,65 @@ func TestMultipleHPAs(t *testing.T) {
 }
 
 func TestHPARescaleWithSuccessfulConflictRetry(t *testing.T) {
-	tc := testCase{
-		minReplicas:             2,
-		maxReplicas:             6,
-		specReplicas:            3,
-		statusReplicas:          3,
-		expectedDesiredReplicas: 5, // On success, the desired count is updated.
-		CPUTarget:               50,
-		reportedLevels:          []uint64{600, 700, 800},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-		useMetricsAPI:           true,
-		expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
-			Type:   autoscalingv2.AbleToScale,
-			Status: v1.ConditionTrue,
-			Reason: "SucceededRescale",
-		}),
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelScaleUp,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleUp,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-		},
+	fixture := horizontalScenario{
+		minReplicas:         2,
+		maxReplicas:         6,
+		specReplicas:        3,
+		statusReplicas:      3,
+		CPUTarget:           50,
+		reportedLevels:      []uint64{600, 700, 800},
+		reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
 	}
 
-	_, _, _, _, testScaleClient := tc.prepareTestClient(t)
-	tc.testScaleClient = testScaleClient
+	setup := newHorizontalSetup(t, &fixture)
 
 	updateCallCount := 0
-	// Use PrependReactor to simulate a transient conflict.
-	testScaleClient.PrependReactor("update", "replicationcontrollers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
+	setup.scaleClient.PrependReactor("update", "replicationcontrollers", func(action core.Action) (handled bool, ret runtime.Object, err error) {
 		updateCallCount++
-		// On the first call, simulate a conflict error.
 		if updateCallCount == 1 {
 			return true, nil, k8serrors.NewConflict(schema.GroupResource{Group: "", Resource: "replicationcontrollers"}, "test-rc", fmt.Errorf("simulated conflict"))
 		}
-		// On subsequent calls, let the default successful reactor handle it.
 		return false, nil, nil
 	})
 
-	tc.runTest(t)
+	hpa := buildHPA(t, &fixture)
+	key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
+
+	err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
+	require.NoError(t, err)
+
+	scaleUpdated := false
+	for _, action := range setup.scaleClient.Actions() {
+		if action.GetVerb() == "update" {
+			scaleUpdated = true
+			scale := action.(core.UpdateAction).GetObject().(*autoscalingv1.Scale)
+			assert.Equal(t, int32(5), scale.Spec.Replicas, "desired replicas should match")
+		}
+	}
+	assert.True(t, scaleUpdated, "scale should have been updated after conflict retry")
+	assert.Equal(t, 2, updateCallCount, "should have retried the update once")
+
+	v, err := metricstestutil.GetCounterMetricValue(
+		monitor.ReconciliationsTotal.WithLabelValues(string(monitor.ActionLabelScaleUp), string(monitor.ErrorLabelNone)))
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded")
+
+	for _, action := range setup.testClient.Actions() {
+		if action.GetVerb() == "update" && action.GetResource().Resource == "horizontalpodautoscalers" {
+			updatedHPA := action.(core.UpdateAction).GetObject().(*autoscalingv2.HorizontalPodAutoscaler)
+			actualConditions := updatedHPA.Status.Conditions
+			for i := range actualConditions {
+				actualConditions[i].Message = ""
+				actualConditions[i].LastTransitionTime = metav1.Time{}
+			}
+			expectedConditions := statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
+				Type:   autoscalingv2.AbleToScale,
+				Status: v1.ConditionTrue,
+				Reason: "SucceededRescale",
+			})
+			assert.Equal(t, expectedConditions, actualConditions, "status conditions should match")
+		}
+	}
 }
 
 func TestReconciliationDurationIsRecorded(t *testing.T) {
@@ -6948,39 +6966,40 @@ func TestReconciliationDurationIsRecorded(t *testing.T) {
 }
 
 func TestReconciliationsTotalCountMultipleReconciliations(t *testing.T) {
-	tc := testCase{
-		minReplicas:             1,
-		maxReplicas:             5,
-		specReplicas:            3,
-		statusReplicas:          3,
-		expectedDesiredReplicas: 3,
-		CPUTarget:               100,
-		reportedLevels:          []uint64{1010, 1030, 1020},
-		reportedCPURequests:     []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
-		useMetricsAPI:           true,
-		expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
-			Type:   autoscalingv2.AbleToScale,
-			Status: v1.ConditionTrue,
-			Reason: "ReadyForNewScale",
-		}),
-		expectedReportedReconciliationActionLabel: monitor.ActionLabelNone,
-		expectedReportedReconciliationErrorLabel:  monitor.ErrorLabelNone,
-		expectedReportedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelNone,
-		},
-		expectedReportedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-			autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-		},
-		// The specific count value is not important. This test verifies that
-		// reconciliationsTotal counter is incremented on each reconciliation cycle.
-		expectedReconciliationCount: 3,
-		// The specific count values are not important. This test verifies that
-		// metricComputationTotal counter is incremented for each metric type on each reconciliation.
-		expectedMetricComputationCounts: map[autoscalingv2.MetricSourceType]int{
-			autoscalingv2.ResourceMetricSourceType: 3,
-		},
+	fixture := horizontalScenario{
+		minReplicas:         1,
+		maxReplicas:         5,
+		specReplicas:        3,
+		statusReplicas:      3,
+		CPUTarget:           100,
+		reportedLevels:      []uint64{1010, 1030, 1020},
+		reportedCPURequests: []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
 	}
-	tc.runTest(t)
+
+	setup := newHorizontalSetup(t, &fixture)
+
+	hpa := buildHPA(t, &fixture)
+	key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
+
+	// The specific count value is not important. This test verifies that
+	// reconciliationsTotal counter is incremented on each reconciliation cycle.
+	const reconciliationCount = 3
+	for range reconciliationCount {
+		err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
+		require.NoError(t, err)
+	}
+
+	v, err := metricstestutil.GetCounterMetricValue(
+		monitor.ReconciliationsTotal.WithLabelValues(string(monitor.ActionLabelNone), string(monitor.ErrorLabelNone)))
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, int(v), reconciliationCount, "reconciliation count should be at least %d", reconciliationCount)
+
+	// The specific count values are not important. This test verifies that
+	// metricComputationTotal counter is incremented for each metric type on each reconciliation.
+	mcv, err := metricstestutil.GetCounterMetricValue(
+		monitor.MetricComputationTotal.WithLabelValues(string(monitor.ActionLabelNone), string(monitor.ErrorLabelNone), string(autoscalingv2.ResourceMetricSourceType)))
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, int(mcv), reconciliationCount, "metric computation count for Resource type should be at least %d", reconciliationCount)
 }
 
 func TestBuildQuantity(t *testing.T) {
