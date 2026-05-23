@@ -902,7 +902,7 @@ func TestScaleUpUnreadyOrHotCpuNoScale(t *testing.T) {
 	}
 }
 
-func TestScaleUpCPU(t *testing.T) {
+func TestScaleCPU(t *testing.T) {
 	tests := []struct {
 		name                    string
 		fixture                 horizontalScenario
@@ -1047,68 +1047,7 @@ func TestScaleUpCPU(t *testing.T) {
 			expectedDesiredReplicas: 3,
 			expectedScaleUpdated:    false,
 			expectedActionLabel:     monitor.ActionLabelNone,
-			// need to add
-			// 	expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
-			// 	Type:   autoscalingv2.AbleToScale,
-			// 	Status: v1.ConditionTrue,
-			// 	Reason: "ReadyForNewScale",
-			// }),
 		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			setup := newHorizontalSetup(t, &tt.fixture)
-
-			hpa := buildHPA(t, &tt.fixture)
-			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
-
-			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
-			require.NoError(t, err)
-
-			// Check whether the controller issued a scale update by inspecting
-			// the fake scale client's recorded actions. If an "update" action
-			// exists, the controller attempted to resize the target resource —
-			// verify the new replica count matches the expectation.
-			scaleUpdated := false
-			for _, action := range setup.scaleClient.Actions() {
-				if action.GetVerb() == "update" {
-					scaleUpdated = true
-					updateAction := action.(core.UpdateAction)
-					scale := updateAction.GetObject().(*autoscalingv1.Scale)
-					assert.Equal(t, tt.expectedDesiredReplicas, scale.Spec.Replicas, "desired replicas should match")
-				}
-			}
-			assert.Equal(t, tt.expectedScaleUpdated, scaleUpdated, "scale update expectation mismatch")
-
-			// Verify that the reconciliation recorded the expected action metric.
-			v, err := metricstestutil.GetCounterMetricValue(
-				monitor.ReconciliationsTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone)))
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s", tt.expectedActionLabel)
-
-			// Verify the metric computation was recorded for the Resource metric type.
-			mcv, err := metricstestutil.GetCounterMetricValue(
-				monitor.MetricComputationTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone), string(autoscalingv2.ResourceMetricSourceType)))
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, mcv, float64(1), "metric computation should be recorded for Resource type")
-
-			v, err = metricstestutil.GetGaugeMetricValue(monitor.DesiredReplicasCount.WithLabelValues("test-namespace", "test-hpa"))
-			require.NoError(t, err)
-			assert.InEpsilon(t, float64(tt.expectedDesiredReplicas), v, 0.01,
-				"the desired replicas should be recorded in monitor expectedly")
-		})
-	}
-}
-
-func TestScaleDownCPU(t *testing.T) {
-	tests := []struct {
-		name                    string
-		fixture                 horizontalScenario
-		expectedDesiredReplicas int32
-		expectedScaleUpdated    bool
-		expectedActionLabel     monitor.ActionLabel
-	}{
 		{
 			name: "scale down",
 			fixture: horizontalScenario{
@@ -1208,10 +1147,6 @@ func TestScaleDownCPU(t *testing.T) {
 			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
 			require.NoError(t, err)
 
-			// Check whether the controller issued a scale update by inspecting
-			// the fake scale client's recorded actions. If an "update" action
-			// exists, the controller attempted to resize the target resource —
-			// verify the new replica count matches the expectation.
 			scaleUpdated := false
 			for _, action := range setup.scaleClient.Actions() {
 				if action.GetVerb() == "update" {
@@ -1223,17 +1158,20 @@ func TestScaleDownCPU(t *testing.T) {
 			}
 			assert.Equal(t, tt.expectedScaleUpdated, scaleUpdated, "scale update expectation mismatch")
 
-			// Verify that the reconciliation recorded the expected action metric.
 			v, err := metricstestutil.GetCounterMetricValue(
 				monitor.ReconciliationsTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone)))
 			require.NoError(t, err)
 			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s", tt.expectedActionLabel)
 
-			// Verify the metric computation was recorded for the Resource metric type.
 			mcv, err := metricstestutil.GetCounterMetricValue(
 				monitor.MetricComputationTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone), string(autoscalingv2.ResourceMetricSourceType)))
 			require.NoError(t, err)
 			assert.GreaterOrEqual(t, mcv, float64(1), "metric computation should be recorded for Resource type")
+
+			v, err = metricstestutil.GetGaugeMetricValue(monitor.DesiredReplicasCount.WithLabelValues("test-namespace", "test-hpa"))
+			require.NoError(t, err)
+			assert.InEpsilon(t, float64(tt.expectedDesiredReplicas), v, 0.01,
+				"the desired replicas should be recorded in monitor expectedly")
 		})
 	}
 }
