@@ -1178,7 +1178,7 @@ func TestScaleCPU(t *testing.T) {
 
 func TestScaleUpCM(t *testing.T) {
 	averageValue := resource.MustParse("15.0")
-	metricsTarget := []autoscalingv2.MetricSpec{
+	podsMetricsTarget := []autoscalingv2.MetricSpec{
 		{
 			Type: autoscalingv2.PodsMetricSourceType,
 			Pods: &autoscalingv2.PodsMetricSource{
@@ -1194,10 +1194,11 @@ func TestScaleUpCM(t *testing.T) {
 	}
 
 	tests := []struct {
-		name                    string
-		fixture                 horizontalScenario
-		expectedDesiredReplicas int32
-		expectedConditions      []autoscalingv2.HorizontalPodAutoscalerCondition
+		name                     string
+		fixture                  horizontalScenario
+		expectedDesiredReplicas  int32
+		expectedMetricSourceType autoscalingv2.MetricSourceType
+		expectedConditions       []autoscalingv2.HorizontalPodAutoscalerCondition
 	}{
 		{
 			name: "scale up custom metric",
@@ -1206,11 +1207,12 @@ func TestScaleUpCM(t *testing.T) {
 				maxReplicas:         6,
 				specReplicas:        3,
 				statusReplicas:      3,
-				metricsTarget:       metricsTarget,
+				metricsTarget:       podsMetricsTarget,
 				reportedLevels:      []uint64{20000, 10000, 30000},
 				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
 			},
-			expectedDesiredReplicas: 4,
+			expectedDesiredReplicas:  4,
+			expectedMetricSourceType: autoscalingv2.PodsMetricSourceType,
 		},
 		{
 			name: "unready and hot cpu pods do not reduce scale for custom metric",
@@ -1219,13 +1221,14 @@ func TestScaleUpCM(t *testing.T) {
 				maxReplicas:          6,
 				specReplicas:         3,
 				statusReplicas:       3,
-				metricsTarget:        metricsTarget,
+				metricsTarget:        podsMetricsTarget,
 				reportedLevels:       []uint64{50000, 10000, 30000},
 				reportedPodReadiness: []v1.ConditionStatus{v1.ConditionTrue, v1.ConditionTrue, v1.ConditionFalse},
 				reportedPodStartTime: []metav1.Time{coolCPUCreationTime(), coolCPUCreationTime(), hotCPUCreationTime()},
 				reportedCPURequests:  []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
 			},
-			expectedDesiredReplicas: 6,
+			expectedDesiredReplicas:  6,
+			expectedMetricSourceType: autoscalingv2.PodsMetricSourceType,
 		},
 		{
 			name: "unready and hot cpu pods scale to max with scaling limited condition",
@@ -1234,13 +1237,14 @@ func TestScaleUpCM(t *testing.T) {
 				maxReplicas:          6,
 				specReplicas:         3,
 				statusReplicas:       3,
-				metricsTarget:        metricsTarget,
+				metricsTarget:        podsMetricsTarget,
 				reportedLevels:       []uint64{50000, 15000, 30000},
 				reportedPodReadiness: []v1.ConditionStatus{v1.ConditionFalse, v1.ConditionTrue, v1.ConditionFalse},
 				reportedPodStartTime: []metav1.Time{hotCPUCreationTime(), coolCPUCreationTime(), hotCPUCreationTime()},
 				reportedCPURequests:  []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
 			},
-			expectedDesiredReplicas: 6,
+			expectedDesiredReplicas:  6,
+			expectedMetricSourceType: autoscalingv2.PodsMetricSourceType,
 			expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
 				Type:   autoscalingv2.AbleToScale,
 				Status: v1.ConditionTrue,
@@ -1250,6 +1254,60 @@ func TestScaleUpCM(t *testing.T) {
 				Status: v1.ConditionTrue,
 				Reason: "TooManyReplicas",
 			}),
+		},
+		{
+			name: "scale up external metric with value target",
+			fixture: horizontalScenario{
+				minReplicas:    2,
+				maxReplicas:    6,
+				specReplicas:   3,
+				statusReplicas: 3,
+				metricsTarget: []autoscalingv2.MetricSpec{
+					{
+						Type: autoscalingv2.ExternalMetricSourceType,
+						External: &autoscalingv2.ExternalMetricSource{
+							Metric: autoscalingv2.MetricIdentifier{
+								Name:     "qps",
+								Selector: &metav1.LabelSelector{},
+							},
+							Target: autoscalingv2.MetricTarget{
+								Type:  autoscalingv2.ValueMetricType,
+								Value: resource.NewMilliQuantity(6666, resource.DecimalSI),
+							},
+						},
+					},
+				},
+				reportedLevels: []uint64{8600},
+			},
+			expectedDesiredReplicas:  4,
+			expectedMetricSourceType: autoscalingv2.ExternalMetricSourceType,
+		},
+		{
+			name: "scale up external metric with per-pod average value target",
+			fixture: horizontalScenario{
+				minReplicas:    2,
+				maxReplicas:    6,
+				specReplicas:   3,
+				statusReplicas: 3,
+				metricsTarget: []autoscalingv2.MetricSpec{
+					{
+						Type: autoscalingv2.ExternalMetricSourceType,
+						External: &autoscalingv2.ExternalMetricSource{
+							Metric: autoscalingv2.MetricIdentifier{
+								Name:     "qps",
+								Selector: &metav1.LabelSelector{},
+							},
+							Target: autoscalingv2.MetricTarget{
+								Type:         autoscalingv2.AverageValueMetricType,
+								AverageValue: resource.NewMilliQuantity(2222, resource.DecimalSI),
+							},
+						},
+					},
+				},
+				reportedLevels: []uint64{8600},
+			},
+			expectedDesiredReplicas:  4,
+			expectedMetricSourceType: autoscalingv2.ExternalMetricSourceType,
 		},
 	}
 
@@ -1280,9 +1338,9 @@ func TestScaleUpCM(t *testing.T) {
 			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=scaleUp")
 
 			mcv, err := metricstestutil.GetCounterMetricValue(
-				monitor.MetricComputationTotal.WithLabelValues(string(monitor.ActionLabelScaleUp), string(monitor.ErrorLabelNone), string(autoscalingv2.PodsMetricSourceType)))
+				monitor.MetricComputationTotal.WithLabelValues(string(monitor.ActionLabelScaleUp), string(monitor.ErrorLabelNone), string(tt.expectedMetricSourceType)))
 			require.NoError(t, err)
-			assert.GreaterOrEqual(t, mcv, float64(1), "metric computation should be recorded for Pods type")
+			assert.GreaterOrEqual(t, mcv, float64(1), "metric computation should be recorded for %s type", tt.expectedMetricSourceType)
 
 			for _, action := range setup.testClient.Actions() {
 				if action.GetVerb() == "update" && action.GetResource().Resource == "horizontalpodautoscalers" {
@@ -1595,104 +1653,6 @@ func TestScaleUpCMObject(t *testing.T) {
 						}
 						assert.Equal(t, tt.expectedConditions, actualConditions, "status conditions should match")
 					}
-				}
-			}
-		})
-	}
-}
-
-func TestScaleUpCMExternal(t *testing.T) {
-	tests := []struct {
-		name    string
-		fixture horizontalScenario
-	}{
-		{
-			name: "scale up external metric with value target",
-			fixture: horizontalScenario{
-				minReplicas:    2,
-				maxReplicas:    6,
-				specReplicas:   3,
-				statusReplicas: 3,
-				metricsTarget: []autoscalingv2.MetricSpec{
-					{
-						Type: autoscalingv2.ExternalMetricSourceType,
-						External: &autoscalingv2.ExternalMetricSource{
-							Metric: autoscalingv2.MetricIdentifier{
-								Name:     "qps",
-								Selector: &metav1.LabelSelector{},
-							},
-							Target: autoscalingv2.MetricTarget{
-								Type:  autoscalingv2.ValueMetricType,
-								Value: resource.NewMilliQuantity(6666, resource.DecimalSI),
-							},
-						},
-					},
-				},
-				reportedLevels: []uint64{8600},
-			},
-		},
-		{
-			name: "scale up external metric with per-pod average value target",
-			fixture: horizontalScenario{
-				minReplicas:    2,
-				maxReplicas:    6,
-				specReplicas:   3,
-				statusReplicas: 3,
-				metricsTarget: []autoscalingv2.MetricSpec{
-					{
-						Type: autoscalingv2.ExternalMetricSourceType,
-						External: &autoscalingv2.ExternalMetricSource{
-							Metric: autoscalingv2.MetricIdentifier{
-								Name:     "qps",
-								Selector: &metav1.LabelSelector{},
-							},
-							Target: autoscalingv2.MetricTarget{
-								Type:         autoscalingv2.AverageValueMetricType,
-								AverageValue: resource.NewMilliQuantity(2222, resource.DecimalSI),
-							},
-						},
-					},
-				},
-				reportedLevels: []uint64{8600},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			setup := newHorizontalSetup(t, &tt.fixture)
-
-			hpa := buildHPA(t, &tt.fixture)
-			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
-
-			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
-			require.NoError(t, err)
-
-			scaleUpdated := false
-			for _, action := range setup.scaleClient.Actions() {
-				if action.GetVerb() == "update" {
-					scaleUpdated = true
-					updateAction := action.(core.UpdateAction)
-					scale := updateAction.GetObject().(*autoscalingv1.Scale)
-					assert.Equal(t, int32(4), scale.Spec.Replicas, "desired replicas should match")
-				}
-			}
-			assert.True(t, scaleUpdated, "scale should have been updated")
-
-			v, err := metricstestutil.GetCounterMetricValue(
-				monitor.ReconciliationsTotal.WithLabelValues(string(monitor.ActionLabelScaleUp), string(monitor.ErrorLabelNone)))
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=scaleUp")
-
-			mcv, err := metricstestutil.GetCounterMetricValue(
-				monitor.MetricComputationTotal.WithLabelValues(string(monitor.ActionLabelScaleUp), string(monitor.ErrorLabelNone), string(autoscalingv2.ExternalMetricSourceType)))
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, mcv, float64(1), "metric computation should be recorded for External type")
-
-			for _, action := range setup.testClient.Actions() {
-				if action.GetVerb() == "update" && action.GetResource().Resource == "horizontalpodautoscalers" {
-					updatedHPA := action.(core.UpdateAction).GetObject().(*autoscalingv2.HorizontalPodAutoscaler)
-					assert.Equal(t, int32(4), updatedHPA.Status.DesiredReplicas, "the desired replica count reported in the object status should be as expected")
 				}
 			}
 		})
@@ -3024,6 +2984,43 @@ func TestReplicaLimits(t *testing.T) {
 				Reason: "TooManyReplicas",
 			}),
 		},
+		{
+			name: "scale up to min immediately even with recent scale time",
+			fixture: horizontalScenario{
+				minReplicas:         2,
+				maxReplicas:         6,
+				specReplicas:        1,
+				statusReplicas:      1,
+				reportedLevels:      []uint64{0, 0, 0, 0},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
+				lastScaleTime:       &metav1.Time{Time: time.Now()},
+			},
+			expectedDesiredReplicas: 2,
+			expectedScaleUpdated:    true,
+			expectedActionLabel:     monitor.ActionLabelScaleUp,
+			expectedConditions: []autoscalingv2.HorizontalPodAutoscalerCondition{
+				{Type: autoscalingv2.AbleToScale, Status: v1.ConditionTrue, Reason: "SucceededRescale"},
+			},
+		},
+		{
+			name: "scale down to max immediately even with recent scale time",
+			fixture: horizontalScenario{
+				minReplicas:         2,
+				maxReplicas:         5,
+				specReplicas:        6,
+				statusReplicas:      6,
+				CPUTarget:           50,
+				reportedLevels:      []uint64{8000, 9500, 1000},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
+				lastScaleTime:       &metav1.Time{Time: time.Now()},
+			},
+			expectedDesiredReplicas: 5,
+			expectedScaleUpdated:    true,
+			expectedActionLabel:     monitor.ActionLabelScaleDown,
+			expectedConditions: []autoscalingv2.HorizontalPodAutoscalerCondition{
+				{Type: autoscalingv2.AbleToScale, Status: v1.ConditionTrue, Reason: "SucceededRescale"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -3187,6 +3184,62 @@ func TestMetricsEdgeCases(t *testing.T) {
 				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelInternal,
 			},
 		},
+		{
+			name: "missing reports from some pods scales down",
+			fixture: horizontalScenario{
+				minReplicas:         1,
+				maxReplicas:         5,
+				specReplicas:        4,
+				statusReplicas:      4,
+				CPUTarget:           50,
+				reportedLevels:      []uint64{200},
+				reportedCPURequests: []resource.Quantity{resource.MustParse("0.2")},
+				recommendations:     []timestampedRecommendation{},
+			},
+			expectedDesiredReplicas: 2,
+			expectedScaleUpdated:    true,
+			expectedActionLabel:     monitor.ActionLabelScaleDown,
+			expectedErrorLabel:      monitor.ErrorLabelNone,
+			expectedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleDown,
+			},
+			expectedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
+			},
+		},
+		{
+			name: "more replicas than spec no scale",
+			fixture: horizontalScenario{
+				minReplicas:    1,
+				maxReplicas:    8,
+				specReplicas:   4,
+				statusReplicas: 5,
+				CPUTarget:      50,
+				reportedLevels: []uint64{500, 500, 500, 500, 500},
+				reportedCPURequests: []resource.Quantity{
+					resource.MustParse("1"),
+					resource.MustParse("1"),
+					resource.MustParse("1"),
+					resource.MustParse("1"),
+					resource.MustParse("1"),
+				},
+			},
+			expectedDesiredReplicas: 4,
+			expectedScaleUpdated:    false,
+			expectedActionLabel:     monitor.ActionLabelNone,
+			expectedErrorLabel:      monitor.ErrorLabelNone,
+			expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
+				Type:   autoscalingv2.AbleToScale,
+				Status: v1.ConditionTrue,
+				Reason: "ReadyForNewScale",
+			}),
+			expectedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelNone,
+			},
+			expectedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
+				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -3334,125 +3387,6 @@ func TestEventCreation(t *testing.T) {
 				monitor.MetricComputationTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone), string(autoscalingv2.ResourceMetricSourceType)))
 			require.NoError(t, err)
 			assert.GreaterOrEqual(t, mcv, float64(1), "metric computation should be recorded for Resource type")
-		})
-	}
-}
-
-func TestCPUScalingEdgeCases(t *testing.T) {
-	tests := []struct {
-		name                                  string
-		fixture                               horizontalScenario
-		expectedDesiredReplicas               int32
-		expectedScaleUpdated                  bool
-		expectedActionLabel                   monitor.ActionLabel
-		expectedConditions                    []autoscalingv2.HorizontalPodAutoscalerCondition
-		expectedMetricComputationActionLabels map[autoscalingv2.MetricSourceType]monitor.ActionLabel
-		expectedMetricComputationErrorLabels  map[autoscalingv2.MetricSourceType]monitor.ErrorLabel
-	}{
-		{
-			name: "missing reports from some pods",
-			fixture: horizontalScenario{
-				minReplicas:         1,
-				maxReplicas:         5,
-				specReplicas:        4,
-				statusReplicas:      4,
-				CPUTarget:           50,
-				reportedLevels:      []uint64{200},
-				reportedCPURequests: []resource.Quantity{resource.MustParse("0.2")},
-				recommendations:     []timestampedRecommendation{},
-			},
-			expectedDesiredReplicas: 2,
-			expectedScaleUpdated:    true,
-			expectedActionLabel:     monitor.ActionLabelScaleDown,
-			expectedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-				autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelScaleDown,
-			},
-			expectedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-			},
-		},
-		{
-			name: "more replicas than spec no scale",
-			fixture: horizontalScenario{
-				minReplicas:    1,
-				maxReplicas:    8,
-				specReplicas:   4,
-				statusReplicas: 5,
-				CPUTarget:      50,
-				reportedLevels: []uint64{500, 500, 500, 500, 500},
-				reportedCPURequests: []resource.Quantity{
-					resource.MustParse("1"),
-					resource.MustParse("1"),
-					resource.MustParse("1"),
-					resource.MustParse("1"),
-					resource.MustParse("1"),
-				},
-			},
-			expectedDesiredReplicas: 4,
-			expectedScaleUpdated:    false,
-			expectedActionLabel:     monitor.ActionLabelNone,
-			expectedConditions: statusOkWithOverrides(autoscalingv2.HorizontalPodAutoscalerCondition{
-				Type:   autoscalingv2.AbleToScale,
-				Status: v1.ConditionTrue,
-				Reason: "ReadyForNewScale",
-			}),
-			expectedMetricComputationActionLabels: map[autoscalingv2.MetricSourceType]monitor.ActionLabel{
-				autoscalingv2.ResourceMetricSourceType: monitor.ActionLabelNone,
-			},
-			expectedMetricComputationErrorLabels: map[autoscalingv2.MetricSourceType]monitor.ErrorLabel{
-				autoscalingv2.ResourceMetricSourceType: monitor.ErrorLabelNone,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			setup := newHorizontalSetup(t, &tt.fixture)
-
-			hpa := buildHPA(t, &tt.fixture)
-			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
-
-			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
-			require.NoError(t, err)
-
-			scaleUpdated := false
-			for _, action := range setup.scaleClient.Actions() {
-				if action.GetVerb() == "update" {
-					scaleUpdated = true
-					updateAction := action.(core.UpdateAction)
-					scale := updateAction.GetObject().(*autoscalingv1.Scale)
-					assert.Equal(t, tt.expectedDesiredReplicas, scale.Spec.Replicas, "desired replicas should match")
-				}
-			}
-			assert.Equal(t, tt.expectedScaleUpdated, scaleUpdated, "scale update expectation mismatch")
-
-			v, err := metricstestutil.GetCounterMetricValue(
-				monitor.ReconciliationsTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone)))
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s", tt.expectedActionLabel)
-
-			for metricType, expectedAction := range tt.expectedMetricComputationActionLabels {
-				expectedError := tt.expectedMetricComputationErrorLabels[metricType]
-				v, err := metricstestutil.GetCounterMetricValue(
-					monitor.MetricComputationTotal.WithLabelValues(string(expectedAction), string(expectedError), string(metricType)))
-				require.NoError(t, err)
-				assert.GreaterOrEqual(t, v, float64(1), "metric computation metric should be recorded for type=%s action=%s error=%s", metricType, expectedAction, expectedError)
-			}
-
-			for _, action := range setup.testClient.Actions() {
-				if action.GetVerb() == "update" && action.GetResource().Resource == "horizontalpodautoscalers" {
-					updatedHPA := action.(core.UpdateAction).GetObject().(*autoscalingv2.HorizontalPodAutoscaler)
-					assert.Equal(t, tt.expectedDesiredReplicas, updatedHPA.Status.DesiredReplicas, "the desired replica count reported in the object status should be as expected")
-					if tt.expectedConditions != nil {
-						actualConditions := updatedHPA.Status.Conditions
-						for i := range actualConditions {
-							actualConditions[i].Message = ""
-							actualConditions[i].LastTransitionTime = metav1.Time{}
-						}
-						assert.Equal(t, tt.expectedConditions, actualConditions, "status conditions should match")
-					}
-				}
-			}
 		})
 	}
 }
@@ -4513,97 +4447,6 @@ func TestComputedToleranceAlgImplementation(t *testing.T) {
 			}
 		}
 	})
-}
-
-func TestScaleRCImmediately(t *testing.T) {
-	now := metav1.Time{Time: time.Now()}
-
-	tests := []struct {
-		name                    string
-		fixture                 horizontalScenario
-		expectedDesiredReplicas int32
-		expectedActionLabel     monitor.ActionLabel
-		expectedConditions      []autoscalingv2.HorizontalPodAutoscalerCondition
-	}{
-		{
-			name: "scale up to min when below min replicas",
-			fixture: horizontalScenario{
-				minReplicas:         2,
-				maxReplicas:         6,
-				specReplicas:        1,
-				statusReplicas:      1,
-				reportedLevels:      []uint64{0, 0, 0, 0},
-				reportedCPURequests: []resource.Quantity{resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0"), resource.MustParse("1.0")},
-				lastScaleTime:       &now,
-			},
-			expectedDesiredReplicas: 2,
-			expectedActionLabel:     monitor.ActionLabelScaleUp,
-			expectedConditions: []autoscalingv2.HorizontalPodAutoscalerCondition{
-				{Type: autoscalingv2.AbleToScale, Status: v1.ConditionTrue, Reason: "SucceededRescale"},
-			},
-		},
-		{
-			name: "scale down to max when above max replicas",
-			fixture: horizontalScenario{
-				minReplicas:         2,
-				maxReplicas:         5,
-				specReplicas:        6,
-				statusReplicas:      6,
-				CPUTarget:           50,
-				reportedLevels:      []uint64{8000, 9500, 1000},
-				reportedCPURequests: []resource.Quantity{resource.MustParse("0.9"), resource.MustParse("1.0"), resource.MustParse("1.1")},
-				lastScaleTime:       &now,
-			},
-			expectedDesiredReplicas: 5,
-			expectedActionLabel:     monitor.ActionLabelScaleDown,
-			expectedConditions: []autoscalingv2.HorizontalPodAutoscalerCondition{
-				{Type: autoscalingv2.AbleToScale, Status: v1.ConditionTrue, Reason: "SucceededRescale"},
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			setup := newHorizontalSetup(t, &tt.fixture)
-
-			hpa := buildHPA(t, &tt.fixture)
-			key := fmt.Sprintf("%s/%s", hpa.Namespace, hpa.Name)
-
-			err := setup.controller.reconcileAutoscaler(setup.ctx, hpa, key)
-			require.NoError(t, err)
-
-			scaleUpdated := false
-			for _, action := range setup.scaleClient.Actions() {
-				if action.GetVerb() == "update" {
-					scaleUpdated = true
-					updateAction := action.(core.UpdateAction)
-					scale := updateAction.GetObject().(*autoscalingv1.Scale)
-					assert.Equal(t, tt.expectedDesiredReplicas, scale.Spec.Replicas, "desired replicas should match")
-				}
-			}
-			assert.True(t, scaleUpdated, "scale should have been updated")
-
-			v, err := metricstestutil.GetCounterMetricValue(
-				monitor.ReconciliationsTotal.WithLabelValues(string(tt.expectedActionLabel), string(monitor.ErrorLabelNone)))
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, v, float64(1), "reconciliation metric should be recorded for action=%s", tt.expectedActionLabel)
-
-			for _, action := range setup.testClient.Actions() {
-				if action.GetVerb() == "update" && action.GetResource().Resource == "horizontalpodautoscalers" {
-					updatedHPA := action.(core.UpdateAction).GetObject().(*autoscalingv2.HorizontalPodAutoscaler)
-					assert.Equal(t, tt.expectedDesiredReplicas, updatedHPA.Status.DesiredReplicas, "the desired replica count reported in the object status should be as expected")
-					if tt.expectedConditions != nil {
-						actualConditions := updatedHPA.Status.Conditions
-						for i := range actualConditions {
-							actualConditions[i].Message = ""
-							actualConditions[i].LastTransitionTime = metav1.Time{}
-						}
-						assert.Equal(t, tt.expectedConditions, actualConditions, "status conditions should match")
-					}
-				}
-			}
-		})
-	}
 }
 
 // TestAvoidUnnecessaryUpdates verifies that the controller does NOT issue a status update
