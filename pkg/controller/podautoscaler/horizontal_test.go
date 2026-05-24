@@ -591,14 +591,12 @@ func newFakeHorizontalClient(t *testing.T, s *horizontalScenario) (*fake.Clients
 
 	fakeEMClient := &emfake.FakeExternalMetricsClient{}
 	fakeEMClient.AddReactor("list", "*", func(action core.Action) (handled bool, ret runtime.Object, err error) {
-		listAction, wasList := action.(core.ListAction)
+		_, wasList := action.(core.ListAction)
 		if !wasList {
 			return true, nil, fmt.Errorf("expected a list action, got %v instead", action)
 		}
 
 		metrics := &emapi.ExternalMetricValueList{}
-
-		_ = listAction
 
 		for _, level := range s.reportedLevels {
 			metric := emapi.ExternalMetricValue{
