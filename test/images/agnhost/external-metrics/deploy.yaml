@@ -1,0 +1,187 @@
+# Build and deploy agnhost with custom --api-group support:
+#
+#   CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /tmp/agnhost ./test/images/agnhost/
+#   cp /tmp/agnhost /tmp/agnhost-test/agnhost
+#   docker build -t agnhost-custom:dev /tmp/agnhost-test/
+#   kind load docker-image agnhost-custom:dev --name kind
+#   kubectl apply -f /tmp/agnhost-test/deploy.yaml
+---
+# Default external metrics server (external.metrics.k8s.io)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: default-metrics-server
+  namespace: default
+  labels:
+    app: default-metrics-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: default-metrics-server
+  template:
+    metadata:
+      labels:
+        app: default-metrics-server
+    spec:
+      containers:
+      - name: metrics
+        image: agnhost-custom:dev
+        imagePullPolicy: Never
+        command: ["/agnhost", "external-metrics", "--port=6443"]
+        ports:
+        - containerPort: 6443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-metrics-server
+  namespace: default
+spec:
+  selector:
+    app: default-metrics-server
+  ports:
+  - port: 443
+    targetPort: 6443
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.external.metrics.k8s.io
+spec:
+  service:
+    name: default-metrics-server
+    namespace: default
+  group: external.metrics.k8s.io
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 100
+  versionPriority: 100
+---
+# Custom external metrics server (external.metrics.example.com)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: custom-metrics-server
+  namespace: default
+  labels:
+    app: custom-metrics-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: custom-metrics-server
+  template:
+    metadata:
+      labels:
+        app: custom-metrics-server
+    spec:
+      containers:
+      - name: metrics
+        image: agnhost-custom:dev
+        imagePullPolicy: Never
+        command: ["/agnhost", "external-metrics", "--port=6443", "--api-group=external.metrics.example.com"]
+        ports:
+        - containerPort: 6443
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: custom-metrics-server
+  namespace: default
+spec:
+  selector:
+    app: custom-metrics-server
+  ports:
+  - port: 443
+    targetPort: 6443
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata:
+  name: v1beta1.external.metrics.example.com
+spec:
+  service:
+    name: custom-metrics-server
+    namespace: default
+  group: external.metrics.example.com
+  version: v1beta1
+  insecureSkipTLSVerify: true
+  groupPriorityMinimum: 100
+  versionPriority: 100
+---
+# RBAC for the custom API group
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hpa-external-metrics-example
+rules:
+- apiGroups: ["external.metrics.example.com"]
+  resources: ["*"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hpa-external-metrics-example
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hpa-external-metrics-example
+subjects:
+- kind: ServiceAccount
+  name: horizontal-pod-autoscaler
+  namespace: kube-system
+---
+# Test deployment to scale
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.9
+---
+# HPA with both default and custom source routing
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: test-source-routing
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: test-app
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  # Metric from the custom API group (source routing)
+  - type: External
+    external:
+      metric:
+        name: queue_messages_ready
+        source:
+          apiGroup: external.metrics.example.com
+      target:
+        type: Value
+        value: "50"
+  # Metric from the default API group (no source, regular path)
+  - type: External
+    external:
+      metric:
+        name: http_requests_total
+      target:
+        type: Value
+        value: "200"

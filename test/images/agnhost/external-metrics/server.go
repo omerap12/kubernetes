@@ -47,12 +47,14 @@ var (
 	port        int
 	serviceName string
 	serviceNs   string
+	apiGroup    string
 )
 
 func init() {
 	CmdExternalMetricsServer.Flags().IntVar(&port, "port", 6443, "Port number.")
 	CmdExternalMetricsServer.Flags().StringVar(&serviceName, "service-name", "external-metrics-server", "Name of the external metrics service.")
 	CmdExternalMetricsServer.Flags().StringVar(&serviceNs, "service-namespace", "default", "Namespace of the external metrics service.")
+	CmdExternalMetricsServer.Flags().StringVar(&apiGroup, "api-group", "external.metrics.k8s.io", "API group to serve metrics under.")
 }
 
 func main(cmd *cobra.Command, args []string) {
@@ -87,8 +89,8 @@ func main(cmd *cobra.Command, args []string) {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/apis/external.metrics.k8s.io/", handleMetrics)
-	mux.HandleFunc("/apis/external.metrics.k8s.io", handleMetrics)
+	mux.HandleFunc("/apis/"+apiGroup+"/", handleMetrics)
+	mux.HandleFunc("/apis/"+apiGroup, handleMetrics)
 	mux.HandleFunc("/healthz", healthz)
 	mux.HandleFunc("/readyz", healthz)
 	mux.HandleFunc("/fail/", failMetric)
@@ -121,19 +123,19 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	klog.InfoS("", "method", r.Method, "path", r.URL.Path)
 	w.Header().Set("Content-Type", "application/json")
 
-	path := strings.TrimPrefix(r.URL.Path, "/apis/external.metrics.k8s.io")
+	path := strings.TrimPrefix(r.URL.Path, "/apis/"+apiGroup)
 	path = strings.TrimPrefix(path, "/")
 
 	if path == "" {
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"kind":       "APIGroup",
 			"apiVersion": "v1",
-			"name":       "external.metrics.k8s.io",
+			"name":       apiGroup,
 			"versions": []map[string]string{
-				{"groupVersion": "external.metrics.k8s.io/v1beta1", "version": "v1beta1"},
+				{"groupVersion": apiGroup + "/v1beta1", "version": "v1beta1"},
 			},
 			"preferredVersion": map[string]string{
-				"groupVersion": "external.metrics.k8s.io/v1beta1",
+				"groupVersion": apiGroup + "/v1beta1",
 				"version":      "v1beta1",
 			},
 		}); err != nil {
@@ -146,7 +148,7 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"kind":         "APIResourceList",
 			"apiVersion":   "v1",
-			"groupVersion": "external.metrics.k8s.io/v1beta1",
+			"groupVersion": apiGroup + "/v1beta1",
 			"resources": []map[string]interface{}{
 				{"name": "*", "namespaced": true, "kind": "ExternalMetricValueList", "verbs": []string{"get"}},
 			},
@@ -195,7 +197,7 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 		if err := json.NewEncoder(w).Encode(map[string]interface{}{
 			"kind":       "ExternalMetricValueList",
-			"apiVersion": "external.metrics.k8s.io/v1beta1",
+			"apiVersion": apiGroup + "/v1beta1",
 			"metadata":   map[string]interface{}{},
 			"items":      items,
 		}); err != nil {
