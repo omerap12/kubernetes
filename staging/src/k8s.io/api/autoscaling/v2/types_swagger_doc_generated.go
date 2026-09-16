@@ -179,10 +179,19 @@ var map_MetricIdentifier = map[string]string{
 	"":         "MetricIdentifier defines the name and optionally selector for a metric",
 	"name":     "name is the name of the given metric",
 	"selector": "selector is the string-encoded form of a standard kubernetes label selector for the given metric When set, it is passed as an additional parameter to the metrics server for more specific metrics scoping. When unset, just the metricName will be used to gather metrics.",
+	"source":   "source identifies an alternative metrics API group to fetch this metric from. The provider serving that API group must implement the same wire format as the default provider for the metric type (MetricValueList for Pods/Object, ExternalMetricValueList for External). When unset, the default API group for the metric type is used.",
 }
 
 func (MetricIdentifier) SwaggerDoc() map[string]string {
 	return map_MetricIdentifier
+}
+
+var map_MetricSourceReference = map[string]string{
+	"": "MetricSourceReference identifies the API group of a metrics provider. The provider must serve the same wire format as the default provider for the metric type (MetricValueList for Pods/Object, ExternalMetricValueList for External).",
+}
+
+func (MetricSourceReference) SwaggerDoc() map[string]string {
+	return map_MetricSourceReference
 }
 
 var map_MetricSpec = map[string]string{

@@ -22,6 +22,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/flowcontrol"
@@ -67,6 +68,32 @@ func NewForConfigOrDie(c *rest.Config) ExternalMetricsClient {
 		panic(err)
 	}
 	return client
+}
+
+// NewForConfigAndGroup creates a new ExternalMetricsClient for an arbitrary
+// API group that serves the external metrics wire format.
+func NewForConfigAndGroup(c *rest.Config, apiGroup string) (ExternalMetricsClient, error) {
+	configShallowCopy := *c
+	if configShallowCopy.RateLimiter == nil && configShallowCopy.QPS > 0 {
+		if configShallowCopy.Burst <= 0 {
+			return nil, fmt.Errorf("burst is required to be greater than 0 when RateLimiter is not set and QPS is set to greater than 0")
+		}
+		configShallowCopy.RateLimiter = flowcontrol.NewTokenBucketRateLimiter(configShallowCopy.QPS, configShallowCopy.Burst)
+	}
+	configShallowCopy.APIPath = "/apis"
+	if configShallowCopy.UserAgent == "" {
+		configShallowCopy.UserAgent = rest.DefaultKubernetesUserAgent()
+	}
+	gv := schema.GroupVersion{Group: apiGroup, Version: v1beta1.SchemeGroupVersion.Version}
+	configShallowCopy.GroupVersion = &gv
+	configShallowCopy.NegotiatedSerializer = scheme.Codecs.WithoutConversion()
+
+	client, err := rest.RESTClientFor(&configShallowCopy)
+	if err != nil {
+		return nil, err
+	}
+
+	return New(client), nil
 }
 
 func (c *externalMetricsClient) NamespacedMetrics(namespace string) MetricsInterface {

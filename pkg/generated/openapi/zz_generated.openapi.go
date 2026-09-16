@@ -406,6 +406,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		autoscalingv2.HorizontalPodAutoscalerSpec{}.OpenAPIModelName():                                                  schema_k8sio_api_autoscaling_v2_HorizontalPodAutoscalerSpec(ref),
 		autoscalingv2.HorizontalPodAutoscalerStatus{}.OpenAPIModelName():                                                schema_k8sio_api_autoscaling_v2_HorizontalPodAutoscalerStatus(ref),
 		autoscalingv2.MetricIdentifier{}.OpenAPIModelName():                                                             schema_k8sio_api_autoscaling_v2_MetricIdentifier(ref),
+		autoscalingv2.MetricSourceReference{}.OpenAPIModelName():                                                        schema_k8sio_api_autoscaling_v2_MetricSourceReference(ref),
 		autoscalingv2.MetricSpec{}.OpenAPIModelName():                                                                   schema_k8sio_api_autoscaling_v2_MetricSpec(ref),
 		autoscalingv2.MetricStatus{}.OpenAPIModelName():                                                                 schema_k8sio_api_autoscaling_v2_MetricStatus(ref),
 		autoscalingv2.MetricTarget{}.OpenAPIModelName():                                                                 schema_k8sio_api_autoscaling_v2_MetricTarget(ref),
@@ -16065,12 +16066,39 @@ func schema_k8sio_api_autoscaling_v2_MetricIdentifier(ref common.ReferenceCallba
 							Ref:         ref(metav1.LabelSelector{}.OpenAPIModelName()),
 						},
 					},
+					"source": {
+						SchemaProps: spec.SchemaProps{
+							Description: "source identifies an alternative metrics API group to fetch this metric from. The provider serving that API group must implement the same wire format as the default provider for the metric type (MetricValueList for Pods/Object, ExternalMetricValueList for External). When unset, the default API group for the metric type is used.",
+							Ref:         ref(autoscalingv2.MetricSourceReference{}.OpenAPIModelName()),
+						},
+					},
 				},
 				Required: []string{"name"},
 			},
 		},
 		Dependencies: []string{
-			metav1.LabelSelector{}.OpenAPIModelName()},
+			autoscalingv2.MetricSourceReference{}.OpenAPIModelName(), metav1.LabelSelector{}.OpenAPIModelName()},
+	}
+}
+
+func schema_k8sio_api_autoscaling_v2_MetricSourceReference(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "MetricSourceReference identifies the API group of a metrics provider. The provider must serve the same wire format as the default provider for the metric type (MetricValueList for Pods/Object, ExternalMetricValueList for External).",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"apiGroup": {
+						SchemaProps: spec.SchemaProps{
+							Default: "",
+							Type:    []string{"string"},
+							Format:  "",
+						},
+					},
+				},
+				Required: []string{"apiGroup"},
+			},
+		},
 	}
 }
 

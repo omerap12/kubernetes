@@ -220,6 +220,7 @@ func newReplicaCalcSetup(t *testing.T, f *calcScenario) *replicaCalcSetup {
 		newFakeResourceMetricsClient(f).MetricsV1beta1(),
 		newFakeCustomMetricsClient(t, f),
 		newFakeExternalMetricsClient(t, f),
+		nil,
 	)
 
 	informerFactory := informers.NewSharedInformerFactory(podClient, controller.NoResyncPeriodFunc())
@@ -1035,7 +1036,7 @@ func TestReplicaCalcExternalPerPodMetric(t *testing.T) {
 			}
 			replicas, usage, ts, err := h.calc.GetExternalPerPodMetricReplicas(
 				tc.fixture.currentReplicas, tc.perPodTargetUsage, tc.fixture.metric.name,
-				h.tolerances, h.namespace, tc.fixture.metric.selector,
+				h.tolerances, h.namespace, tc.fixture.metric.selector, "",
 			)
 			assertMetricReplicas(t,
 				tc.expectedReplicas, tc.expectedUsage, tc.fixture.timestamp, tc.expectedError,
@@ -1147,7 +1148,7 @@ func TestReplicaCalcPodMetric(t *testing.T) {
 			}
 			replicas, usage, ts, err := h.calc.GetMetricReplicas(
 				tc.fixture.currentReplicas, tc.targetUsage, tc.fixture.metric.name,
-				h.tolerances, h.namespace, h.selector, nil,
+				h.tolerances, h.namespace, h.selector, nil, "",
 			)
 			assertMetricReplicas(t,
 				tc.expectedReplicas, tc.expectedUsage, tc.fixture.timestamp, tc.expectedError,
@@ -1236,7 +1237,7 @@ func TestReplicaCalcObjectMetric(t *testing.T) {
 			}
 			replicas, usage, ts, err := h.calc.GetObjectMetricReplicas(
 				tc.fixture.currentReplicas, tc.targetUsage, tc.fixture.metric.name,
-				h.tolerances, h.namespace, tc.fixture.metric.singleObject, h.selector, nil,
+				h.tolerances, h.namespace, tc.fixture.metric.singleObject, h.selector, nil, "",
 			)
 			assertMetricReplicas(t,
 				tc.expectedReplicas, tc.expectedUsage, tc.fixture.timestamp, tc.expectedError,
@@ -1334,7 +1335,7 @@ func TestReplicaCalcObjectPerPodMetric(t *testing.T) {
 			}
 			replicas, usage, ts, err := h.calc.GetObjectPerPodMetricReplicas(
 				tc.fixture.currentReplicas, tc.perPodTargetUsage, tc.fixture.metric.name,
-				h.tolerances, h.namespace, tc.fixture.metric.singleObject, nil,
+				h.tolerances, h.namespace, tc.fixture.metric.singleObject, nil, "",
 			)
 			assertMetricReplicas(t,
 				tc.expectedReplicas, tc.expectedUsage, tc.fixture.timestamp, tc.expectedError,
@@ -1414,7 +1415,7 @@ func TestReplicaCalcExternalMetric(t *testing.T) {
 			}
 			replicas, usage, ts, err := h.calc.GetExternalMetricReplicas(
 				tc.fixture.currentReplicas, tc.targetUsage, tc.fixture.metric.name,
-				h.tolerances, h.namespace, tc.fixture.metric.selector, h.selector,
+				h.tolerances, h.namespace, tc.fixture.metric.selector, h.selector, "",
 			)
 			assertMetricReplicas(t,
 				tc.expectedReplicas, tc.expectedUsage, tc.fixture.timestamp, tc.expectedError,

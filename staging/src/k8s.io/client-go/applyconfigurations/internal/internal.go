@@ -3265,6 +3265,16 @@ var schemaYAML = typed.YAMLObject(`types:
     - name: selector
       type:
         namedType: io.k8s.apimachinery.pkg.apis.meta.v1.LabelSelector
+    - name: source
+      type:
+        namedType: io.k8s.api.autoscaling.v2.MetricSourceReference
+- name: io.k8s.api.autoscaling.v2.MetricSourceReference
+  map:
+    fields:
+    - name: apiGroup
+      type:
+        scalar: string
+      default: ""
 - name: io.k8s.api.autoscaling.v2.MetricSpec
   map:
     fields:

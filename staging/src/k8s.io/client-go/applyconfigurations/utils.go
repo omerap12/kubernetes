@@ -482,6 +482,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &autoscalingv2.HPAScalingRulesApplyConfiguration{}
 	case v2.SchemeGroupVersion.WithKind("MetricIdentifier"):
 		return &autoscalingv2.MetricIdentifierApplyConfiguration{}
+	case v2.SchemeGroupVersion.WithKind("MetricSourceReference"):
+		return &autoscalingv2.MetricSourceReferenceApplyConfiguration{}
 	case v2.SchemeGroupVersion.WithKind("MetricSpec"):
 		return &autoscalingv2.MetricSpecApplyConfiguration{}
 	case v2.SchemeGroupVersion.WithKind("MetricStatus"):

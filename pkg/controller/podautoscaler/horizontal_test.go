@@ -380,6 +380,7 @@ func newHorizontalSetup(t *testing.T, s *horizontalScenario, testClient *fake.Cl
 		testMetricsClient.MetricsV1beta1(),
 		testCMClient,
 		testEMClient,
+		nil,
 	)
 
 	informerFactory := informers.NewSharedInformerFactory(testClient, 1*time.Second)
@@ -6429,6 +6430,7 @@ func TestMultipleHPAs(t *testing.T) {
 		testMetricsClient.MetricsV1beta1(),
 		&cmfake.FakeCustomMetricsClient{},
 		&emfake.FakeExternalMetricsClient{},
+		nil,
 	)
 
 	testScaleClient.AddReactor("get", "deployments", func(action core.Action) (handled bool, ret runtime.Object, err error) {

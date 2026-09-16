@@ -22,6 +22,7 @@ package app
 import (
 	"context"
 	"fmt"
+
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/scale"
 	"k8s.io/kubernetes/cmd/kube-controller-manager/names"
@@ -71,10 +72,17 @@ func newHorizontalPodAutoscalerController(ctx context.Context, controllerContext
 		return nil, fmt.Errorf("failed to init the external metrics client for %s: %w", controllerName, err)
 	}
 
+	clientFactory := metrics.NewDynamicMetricsClientFactory(
+		clientConfig,
+		controllerContext.RESTMapper,
+		hpaClient.Discovery(),
+	)
+
 	metricsClient := metrics.NewRESTMetricsClient(
 		resourceClient,
 		custom_metrics.NewForConfig(clientConfig, controllerContext.RESTMapper, apiVersionsGetter),
 		externalMetricsClient,
+		clientFactory,
 	)
 
 	pas := podautoscaler.NewHorizontalController(

@@ -46,13 +46,13 @@ type MetricsClient interface {
 
 	// GetRawMetric gets the given metric (and an associated oldest timestamp)
 	// for all pods matching the specified selector in the given namespace
-	GetRawMetric(metricName string, namespace string, selector labels.Selector, metricSelector labels.Selector) (PodMetricsInfo, time.Time, error)
+	GetRawMetric(metricName string, namespace string, selector labels.Selector, metricSelector labels.Selector, apiGroup string) (PodMetricsInfo, time.Time, error)
 
 	// GetObjectMetric gets the given metric (and an associated timestamp) for the given
 	// object in the given namespace
-	GetObjectMetric(metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, metricSelector labels.Selector) (int64, time.Time, error)
+	GetObjectMetric(metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, metricSelector labels.Selector, apiGroup string) (int64, time.Time, error)
 
 	// GetExternalMetric gets all the values of a given external metric
 	// that match the specified selector.
-	GetExternalMetric(metricName string, namespace string, selector labels.Selector) ([]int64, time.Time, error)
+	GetExternalMetric(metricName string, namespace string, selector labels.Selector, apiGroup string) ([]int64, time.Time, error)
 }

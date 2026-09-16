@@ -71,6 +71,8 @@ spec:
             - valuesValue
           matchLabels:
             matchLabelsKey: matchLabelsValue
+        source:
+          apiGroup: apiGroupValue
       target:
         averageUtilization: 4
         averageValue: "0"
@@ -91,6 +93,8 @@ spec:
             - valuesValue
           matchLabels:
             matchLabelsKey: matchLabelsValue
+        source:
+          apiGroup: apiGroupValue
       target:
         averageUtilization: 4
         averageValue: "0"
@@ -107,6 +111,8 @@ spec:
             - valuesValue
           matchLabels:
             matchLabelsKey: matchLabelsValue
+        source:
+          apiGroup: apiGroupValue
       target:
         averageUtilization: 4
         averageValue: "0"
@@ -156,6 +162,8 @@ status:
             - valuesValue
           matchLabels:
             matchLabelsKey: matchLabelsValue
+        source:
+          apiGroup: apiGroupValue
     object:
       current:
         averageUtilization: 3
@@ -175,6 +183,8 @@ status:
             - valuesValue
           matchLabels:
             matchLabelsKey: matchLabelsValue
+        source:
+          apiGroup: apiGroupValue
     pods:
       current:
         averageUtilization: 3
@@ -190,6 +200,8 @@ status:
             - valuesValue
           matchLabels:
             matchLabelsKey: matchLabelsValue
+        source:
+          apiGroup: apiGroupValue
     resource:
       current:
         averageUtilization: 3

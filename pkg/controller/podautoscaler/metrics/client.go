@@ -39,11 +39,12 @@ const (
 	metricServerDefaultMetricWindow = time.Minute
 )
 
-func NewRESTMetricsClient(resourceClient resourceclient.PodMetricsesGetter, customClient customclient.CustomMetricsClient, externalClient externalclient.ExternalMetricsClient) MetricsClient {
+func NewRESTMetricsClient(resourceClient resourceclient.PodMetricsesGetter, customClient customclient.CustomMetricsClient, externalClient externalclient.ExternalMetricsClient, clientFactory MetricsClientFactory) MetricsClient {
 	return &restMetricsClient{
-		&resourceMetricsClient{resourceClient},
-		&customMetricsClient{customClient},
-		&externalMetricsClient{externalClient},
+		resourceMetricsClient: &resourceMetricsClient{resourceClient},
+		customMetricsClient:   &customMetricsClient{customClient},
+		externalMetricsClient: &externalMetricsClient{externalClient},
+		clientFactory:         clientFactory,
 	}
 }
 
@@ -54,6 +55,12 @@ type restMetricsClient struct {
 	*resourceMetricsClient
 	*customMetricsClient
 	*externalMetricsClient
+	clientFactory MetricsClientFactory
+}
+
+type MetricsClientFactory interface {
+	CustomClientForGroup(apiGroup string) (customclient.CustomMetricsClient, error)
+	ExternalClientForGroup(apiGroup string) (externalclient.ExternalMetricsClient, error)
 }
 
 // resourceMetricsClient implements the resource-metrics-related parts of MetricsClient,
@@ -140,8 +147,16 @@ type customMetricsClient struct {
 
 // GetRawMetric gets the given metric (and an associated oldest timestamp)
 // for all pods matching the specified selector in the given namespace
-func (c *customMetricsClient) GetRawMetric(metricName string, namespace string, selector labels.Selector, metricSelector labels.Selector) (PodMetricsInfo, time.Time, error) {
-	metrics, err := c.client.NamespacedMetrics(namespace).GetForObjects(schema.GroupKind{Kind: "Pod"}, selector, metricName, metricSelector)
+func (c *restMetricsClient) GetRawMetric(metricName string, namespace string, selector labels.Selector, metricSelector labels.Selector, apiGroup string) (PodMetricsInfo, time.Time, error) {
+	client := c.customMetricsClient.client
+	if apiGroup != "" && c.clientFactory != nil {
+		customClient, err := c.clientFactory.CustomClientForGroup(apiGroup)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("unable to get custom metrics client for API group %q: %w", apiGroup, err)
+		}
+		client = customClient
+	}
+	metrics, err := client.NamespacedMetrics(namespace).GetForObjects(schema.GroupKind{Kind: "Pod"}, selector, metricName, metricSelector)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("unable to fetch metrics from custom metrics API: %w", err)
 	}
@@ -170,17 +185,22 @@ func (c *customMetricsClient) GetRawMetric(metricName string, namespace string, 
 
 // GetObjectMetric gets the given metric (and an associated timestamp) for the given
 // object in the given namespace
-func (c *customMetricsClient) GetObjectMetric(metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, metricSelector labels.Selector) (int64, time.Time, error) {
+func (c *restMetricsClient) GetObjectMetric(metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, metricSelector labels.Selector, apiGroup string) (int64, time.Time, error) {
+	client := c.customMetricsClient.client
+	if apiGroup != "" && c.clientFactory != nil {
+		customClient, err := c.clientFactory.CustomClientForGroup(apiGroup)
+		if err != nil {
+			return 0, time.Time{}, fmt.Errorf("unable to get custom metrics client for API group %q: %w", apiGroup, err)
+		}
+		client = customClient
+	}
 	gvk := schema.FromAPIVersionAndKind(objectRef.APIVersion, objectRef.Kind)
 	var metricValue *customapi.MetricValue
 	var err error
 	if gvk.Kind == "Namespace" && gvk.Group == "" {
-		// handle namespace separately
-		// NB: we ignore namespace name here, since CrossVersionObjectReference isn't
-		// supposed to allow you to escape your namespace
-		metricValue, err = c.client.RootScopedMetrics().GetForObject(gvk.GroupKind(), namespace, metricName, metricSelector)
+		metricValue, err = client.RootScopedMetrics().GetForObject(gvk.GroupKind(), namespace, metricName, metricSelector)
 	} else {
-		metricValue, err = c.client.NamespacedMetrics(namespace).GetForObject(gvk.GroupKind(), objectRef.Name, metricName, metricSelector)
+		metricValue, err = client.NamespacedMetrics(namespace).GetForObject(gvk.GroupKind(), objectRef.Name, metricName, metricSelector)
 	}
 
 	if err != nil {
@@ -198,8 +218,17 @@ type externalMetricsClient struct {
 
 // GetExternalMetric gets all the values of a given external metric
 // that match the specified selector.
-func (c *externalMetricsClient) GetExternalMetric(metricName, namespace string, selector labels.Selector) ([]int64, time.Time, error) {
-	metrics, err := c.client.NamespacedMetrics(namespace).List(metricName, selector)
+func (c *restMetricsClient) GetExternalMetric(metricName, namespace string, selector labels.Selector, apiGroup string) ([]int64, time.Time, error) {
+	client := c.externalMetricsClient.client
+	if apiGroup != "" && c.clientFactory != nil {
+		extClient, err := c.clientFactory.ExternalClientForGroup(apiGroup)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("unable to get external metrics client for API group %q: %w", apiGroup, err)
+		}
+		client = extClient
+	}
+	metrics, err := client.NamespacedMetrics(namespace).List(metricName, selector)
+
 	if err != nil {
 		return []int64{}, time.Time{}, fmt.Errorf("unable to fetch metrics from external metrics API: %w", err)
 	}

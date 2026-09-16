@@ -342,6 +342,22 @@ type MetricIdentifier struct {
 	// it is the string-encoded form of a standard kubernetes label selector
 	// +optional
 	Selector *metav1.LabelSelector
+	// source identifies an alternative metrics API group to fetch this metric from.
+	// The provider serving that API group must implement the same wire format as the
+	// default provider for the metric type (MetricValueList for Pods/Object,
+	// ExternalMetricValueList for External).
+	// When unset, the default API group for the metric type is used.
+	// +featureGate=HPAMetricSource
+	// +optional
+	Source *MetricSourceReference `json:"source,omitempty" protobuf:"bytes,3,opt,name=source"`
+}
+
+// MetricSourceReference identifies the API group of a metrics provider.
+// The provider must serve the same wire format as the default provider
+// for the metric type (MetricValueList for Pods/Object, ExternalMetricValueList
+// for External).
+type MetricSourceReference struct {
+	APIGroup string `json:"apiGroup" protobuf:"bytes,1,name=apiGroup"`
 }
 
 // MetricTarget defines the target value, average value, or average utilization of a specific metric

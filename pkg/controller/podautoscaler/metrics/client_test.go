@@ -237,7 +237,7 @@ func (tc *restClientTestCase) verifyResults(t *testing.T, metrics PodMetricsInfo
 func (tc *restClientTestCase) runTest(t *testing.T) {
 	var err error
 	testMetricsClient, testCMClient, testEMClient := tc.prepareTestClient(t)
-	metricsClient := NewRESTMetricsClient(testMetricsClient.MetricsV1beta1(), testCMClient, testEMClient)
+	metricsClient := NewRESTMetricsClient(testMetricsClient.MetricsV1beta1(), testCMClient, testEMClient, nil)
 	isResource := len(tc.resourceName) > 0
 	isExternal := tc.metricSelector != nil
 	if isResource {
@@ -248,17 +248,17 @@ func (tc *restClientTestCase) runTest(t *testing.T) {
 		if err != nil {
 			t.Errorf("invalid metric selector: %+v", tc.metricSelector)
 		}
-		val, timestamp, err := metricsClient.GetExternalMetric(tc.metricName, tc.namespace, tc.metricLabelSelector)
+		val, timestamp, err := metricsClient.GetExternalMetric(tc.metricName, tc.namespace, tc.metricLabelSelector, "")
 		info := make(PodMetricsInfo, len(val))
 		for i, metricVal := range val {
 			info[fmt.Sprintf("%v-val-%v", tc.metricName, i)] = PodMetric{Value: metricVal}
 		}
 		tc.verifyResults(t, info, timestamp, err)
 	} else if tc.singleObject == nil {
-		info, timestamp, err := metricsClient.GetRawMetric(tc.metricName, tc.namespace, tc.selector, tc.metricLabelSelector)
+		info, timestamp, err := metricsClient.GetRawMetric(tc.metricName, tc.namespace, tc.selector, tc.metricLabelSelector, "")
 		tc.verifyResults(t, info, timestamp, err)
 	} else {
-		val, timestamp, err := metricsClient.GetObjectMetric(tc.metricName, tc.namespace, tc.singleObject, tc.metricLabelSelector)
+		val, timestamp, err := metricsClient.GetObjectMetric(tc.metricName, tc.namespace, tc.singleObject, tc.metricLabelSelector, "")
 		info := PodMetricsInfo{tc.singleObject.Name: {Value: val}}
 		tc.verifyResults(t, info, timestamp, err)
 	}

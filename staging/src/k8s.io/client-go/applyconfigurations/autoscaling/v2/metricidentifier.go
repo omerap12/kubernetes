@@ -33,6 +33,12 @@ type MetricIdentifierApplyConfiguration struct {
 	// When set, it is passed as an additional parameter to the metrics server for more specific metrics scoping.
 	// When unset, just the metricName will be used to gather metrics.
 	Selector *v1.LabelSelectorApplyConfiguration `json:"selector,omitempty"`
+	// source identifies an alternative metrics API group to fetch this metric from.
+	// The provider serving that API group must implement the same wire format as the
+	// default provider for the metric type (MetricValueList for Pods/Object,
+	// ExternalMetricValueList for External).
+	// When unset, the default API group for the metric type is used.
+	Source *MetricSourceReferenceApplyConfiguration `json:"source,omitempty"`
 }
 
 // MetricIdentifierApplyConfiguration constructs a declarative configuration of the MetricIdentifier type for use with
@@ -54,5 +60,13 @@ func (b *MetricIdentifierApplyConfiguration) WithName(value string) *MetricIdent
 // If called multiple times, the Selector field is set to the value of the last call.
 func (b *MetricIdentifierApplyConfiguration) WithSelector(value *v1.LabelSelectorApplyConfiguration) *MetricIdentifierApplyConfiguration {
 	b.Selector = value
+	return b
+}
+
+// WithSource sets the Source field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Source field is set to the value of the last call.
+func (b *MetricIdentifierApplyConfiguration) WithSource(value *MetricSourceReferenceApplyConfiguration) *MetricIdentifierApplyConfiguration {
+	b.Source = value
 	return b
 }

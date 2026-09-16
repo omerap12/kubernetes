@@ -469,10 +469,31 @@
               }
             ],
             "description": "selector is the string-encoded form of a standard kubernetes label selector for the given metric When set, it is passed as an additional parameter to the metrics server for more specific metrics scoping. When unset, just the metricName will be used to gather metrics."
+          },
+          "source": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/io.k8s.api.autoscaling.v2.MetricSourceReference"
+              }
+            ],
+            "description": "source identifies an alternative metrics API group to fetch this metric from. The provider serving that API group must implement the same wire format as the default provider for the metric type (MetricValueList for Pods/Object, ExternalMetricValueList for External). When unset, the default API group for the metric type is used."
           }
         },
         "required": [
           "name"
+        ],
+        "type": "object"
+      },
+      "io.k8s.api.autoscaling.v2.MetricSourceReference": {
+        "description": "MetricSourceReference identifies the API group of a metrics provider. The provider must serve the same wire format as the default provider for the metric type (MetricValueList for Pods/Object, ExternalMetricValueList for External).",
+        "properties": {
+          "apiGroup": {
+            "default": "",
+            "type": "string"
+          }
+        },
+        "required": [
+          "apiGroup"
         ],
         "type": "object"
       },

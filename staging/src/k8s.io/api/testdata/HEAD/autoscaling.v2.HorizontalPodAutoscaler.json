@@ -81,6 +81,9 @@
                   ]
                 }
               ]
+            },
+            "source": {
+              "apiGroup": "apiGroupValue"
             }
           }
         },
@@ -100,6 +103,9 @@
                   ]
                 }
               ]
+            },
+            "source": {
+              "apiGroup": "apiGroupValue"
             }
           },
           "target": {
@@ -144,6 +150,9 @@
                   ]
                 }
               ]
+            },
+            "source": {
+              "apiGroup": "apiGroupValue"
             }
           },
           "target": {
@@ -206,6 +215,9 @@
                   ]
                 }
               ]
+            },
+            "source": {
+              "apiGroup": "apiGroupValue"
             }
           },
           "current": {
@@ -235,6 +247,9 @@
                   ]
                 }
               ]
+            },
+            "source": {
+              "apiGroup": "apiGroupValue"
             }
           },
           "current": {
@@ -276,6 +291,9 @@
                   ]
                 }
               ]
+            },
+            "source": {
+              "apiGroup": "apiGroupValue"
             }
           },
           "current": {

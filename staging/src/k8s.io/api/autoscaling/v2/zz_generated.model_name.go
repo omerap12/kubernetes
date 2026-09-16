@@ -92,6 +92,11 @@ func (in MetricIdentifier) OpenAPIModelName() string {
 }
 
 // OpenAPIModelName returns the OpenAPI model name for this type.
+func (in MetricSourceReference) OpenAPIModelName() string {
+	return "io.k8s.api.autoscaling.v2.MetricSourceReference"
+}
+
+// OpenAPIModelName returns the OpenAPI model name for this type.
 func (in MetricSpec) OpenAPIModelName() string {
 	return "io.k8s.api.autoscaling.v2.MetricSpec"
 }
